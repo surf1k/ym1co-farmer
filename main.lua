@@ -107,28 +107,46 @@ repeat task.wait() until game:IsLoaded()
 
 local scriptLoadTime = tick()
 
--- ==================== МАКСИМАЛЬНАЯ ОПТИМИЗАЦИЯ ОЗУ И GPU ====================
+-- ==================== МАКСИМАЛЬНАЯ ОПТИМИЗАЦИЯ ОЗУ И GPU (EXTRA RAM) ====================
 local function applyExtremeOptimization()
+    -- 1. Отключение 3D рендеринга (снижает нагрузку на GPU и ОЗУ практически до нуля)
     pcall(function()
         RunService:Set3dRenderingEnabled(false)
     end)
 
+    -- 2. Ограничение FPS (15 FPS достаточно для автофарма)
     pcall(function()
         if setfpscap then
-            setfpscap(20)
+            setfpscap(15)
         end
     end)
 
-    pcall(function() settings().Rendering.QualityLevel = 1 end)
+    -- 3. Минимальный уровень графики
+    pcall(function()
+        settings().Rendering.QualityLevel = 1
+        settings().Rendering.EditQualityLevel = 1
+    end)
+
+    -- 4. Очистка глобального освещения, теней, атмосферы и неба
     pcall(function()
         Lighting.GlobalShadows = false
         Lighting.FogEnd = 9e9
         Lighting.Brightness = 0
+        Lighting.ClockTime = 14
 
+        for _, v in ipairs(Lighting:GetChildren()) do
+            if v:IsA("PostProcessEffect") or v:IsA("Atmosphere") or v:IsA("Sky") or v:IsA("Clouds") then
+                v.Enabled = false
+            end
+        end
+    end)
+
+    -- 5. Очистка текстур, декалей, звуков, частиц со всех игровых объектов
+    pcall(function()
         for _, v in ipairs(game:GetDescendants()) do
             if v:IsA("Decal") or v:IsA("Texture") then
                 v.Transparency = 1
-            elseif v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Explosion") then
+            elseif v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Explosion") or v:IsA("Sparkles") or v:IsA("Highlight") then
                 v.Enabled = false
             elseif v:IsA("Sound") then
                 v.Volume = 0
@@ -136,10 +154,37 @@ local function applyExtremeOptimization()
             elseif v:IsA("BasePart") and not v:IsA("MeshPart") then
                 v.Material = Enum.Material.SmoothPlastic
                 v.Reflectance = 0
+                v.CastShadow = false
             end
         end
     end)
+
+    -- 6. Авто-очистка для динамически спавнящихся ассетов (новые карты, скины, эффекты)
+    pcall(function()
+        if not getgenv()._mm2_extra_ram_hook then
+            getgenv()._mm2_extra_ram_hook = Workspace.DescendantAdded:Connect(function(v)
+                if not Settings or not Settings.ExtremeRAMSaver then return end
+                pcall(function()
+                    if v:IsA("Decal") or v:IsA("Texture") then
+                        v.Transparency = 1
+                    elseif v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Explosion") or v:IsA("Sparkles") or v:IsA("Highlight") then
+                        v.Enabled = false
+                    elseif v:IsA("Sound") then
+                        v.Volume = 0
+                        v:Stop()
+                    elseif v:IsA("BasePart") and not v:IsA("MeshPart") then
+                        v.Material = Enum.Material.SmoothPlastic
+                        v.Reflectance = 0
+                        v.CastShadow = false
+                    end
+                end)
+            end)
+        end
+    end)
 end
+
+-- Включаем Extra RAM сразу при старте
+applyExtremeOptimization()
 
 
 -- Load Rayfield UI Library
@@ -1623,6 +1668,24 @@ task.spawn(function()
     end
 end)
 
+local function applySafeFarmPreset()
+    Settings.FarmMode = "Tween"
+    Settings.FarmSpeed = 50
+    Settings.CoinDelay = 0.01
+    Settings.MaxBagCapacity = 40
+    Settings.ActionOnFull = "CombatWin"
+    Settings.AvoidMurderer = true
+    Settings.AvoidDistance = 35
+    Settings.AvoidAction = "Kite"
+    Settings.AutoHopAfterRound = false
+    Settings.AutoGrabGun = false
+    Settings.GunPriority = false
+    Settings.AutoWinAsRoles = false
+    Settings.ExtremeRAMSaver = true
+    setAutoFarm(true)
+    applyExtremeOptimization()
+end
+
 -- ==================== ВКЛАДКИ RAYFIELD ====================
 if Window then
     local PresetsTab = Window:CreateTab("Presets", 0)
@@ -1639,17 +1702,8 @@ if Window then
     PresetsTab:CreateButton({
         Name = "Safe Farm & Auto-Lobby Exit",
         Callback = function()
-            Settings.FarmMode = "Tween"
-            Settings.FarmSpeed = 50
-            Settings.CoinDelay = 0.01
-            Settings.MaxBagCapacity = 40
-            Settings.ActionOnFull = "CombatWin"
-            Settings.AvoidMurderer = true
-            Settings.AvoidDistance = 35
-            Settings.AvoidAction = "Kite"
-            Settings.AutoHopAfterRound = false
-            setAutoFarm(true)
-            notifyUser("ym1co Preset", "Activated Combat Farm (~1s/coin)", 3)
+            applySafeFarmPreset()
+            notifyUser("ym1co Preset", "Activated Safe Farm (~1s/coin) + Extra RAM", 3)
         end,
     })
 
@@ -2028,12 +2082,11 @@ if Window then
     })
 
     Rayfield:LoadConfiguration()
+    -- Автоматическое применение пресета Safe Farm + Extra RAM
+    applySafeFarmPreset()
 end
 
 -- Старт
-if Settings.ExtremeRAMSaver then
-    applyExtremeOptimization()
-end
-setAutoFarm(true)
+applySafeFarmPreset()
 
-notifyUser("ym1co farmer 5.0", "ym1co farmer 5.0 fully loaded without errors!", 3)
+notifyUser("ym1co farmer 5.0", "ym1co farmer 5.0: Preset & Extra RAM auto-activated!", 3)
