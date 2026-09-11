@@ -270,9 +270,9 @@ end
 -- ==================== НАСТРОЙКИ ПО УМОЛЧАНИЮ ====================
 local Settings = {
     AutoFarm = true,
-    FarmSpeed = 75,
-    FarmMode = "Tween",
-    CoinDelay = 0.01,
+    FarmSpeed = 100,
+    FarmMode = "Instant TP",
+    CoinDelay = 0,
     MaxBagCapacity = 40,
     ActionOnFull = "Lobby",
 
@@ -1670,6 +1670,7 @@ local function farmStep()
         if Settings.FarmMode == "Instant TP" then
             root.CFrame = targetPart.CFrame
             root.AssemblyLinearVelocity = Vector3.zero
+            touchCoin(targetPart, root)
         else
             local tTime = math.clamp(dist / Settings.FarmSpeed, 0.03, 0.85)
             local tweenInfo = TweenInfo.new(tTime, Enum.EasingStyle.Linear)
@@ -1688,7 +1689,7 @@ local function farmStep()
                 if (root.Position - targetPart.Position).Magnitude <= 3.2 then
                     break
                 end
-                task.wait(0.02)
+                task.wait(0.01)
             end
 
             if currentTween then
@@ -1718,7 +1719,7 @@ local function farmStep()
                 break
             end
 
-            if (tick() - startGrab) > 0.3 then
+            if (tick() - startGrab) > 0.1 then
                 ignoredCoins[targetPart] = tick() + 5.0
                 break
             end
@@ -1727,7 +1728,7 @@ local function farmStep()
             root.AssemblyLinearVelocity = Vector3.zero
             touchCoin(targetPart, root)
 
-            task.wait(0.02)
+            task.wait(0.01)
 
             if not targetPart.Parent or not targetPart:IsDescendantOf(container) then
                 break
@@ -1747,7 +1748,7 @@ end
 
 task.spawn(function()
     while true do
-        task.wait(0.02)
+        task.wait(0.01)
         pcall(farmStep)
     end
 end)
@@ -1768,9 +1769,9 @@ if Window then
     PresetsTab:CreateButton({
         Name = "Safe Farm & Auto-Lobby Exit",
         Callback = function()
-            Settings.FarmMode = "Tween"
-            Settings.FarmSpeed = 75
-            Settings.CoinDelay = 0.01
+            Settings.FarmMode = "Instant TP"
+            Settings.FarmSpeed = 100
+            Settings.CoinDelay = 0
             Settings.MaxBagCapacity = 40
             Settings.ActionOnFull = "Lobby"
             Settings.AvoidMurderer = true
@@ -1779,7 +1780,7 @@ if Window then
             Settings.AutoHopAfterRound = false
             Settings.AutoGrabGun = false
             setAutoFarm(true)
-            notifyUser("ym1co Preset", "Activated Safe Farm (Lobby on 40 coins)", 3)
+            notifyUser("ym1co Preset", "Activated Safe Farm (No Delay, Lobby on 40 coins)", 3)
         end,
     })
 
@@ -1787,30 +1788,30 @@ if Window then
         Name = "Rage Farm",
         Callback = function()
             Settings.FarmMode = "Instant TP"
-            Settings.FarmSpeed = 95
-            Settings.CoinDelay = 0.01
+            Settings.FarmSpeed = 100
+            Settings.CoinDelay = 0
             Settings.MaxBagCapacity = 40
             Settings.ActionOnFull = "Lobby"
             Settings.AvoidMurderer = true
             Settings.AutoGrabGun = false
             setAutoFarm(true)
-            notifyUser("ym1co Preset", "Activated Rage Farm (Lobby on 40 coins)", 3)
+            notifyUser("ym1co Preset", "Activated Rage Farm (No Delay, Lobby on 40 coins)", 3)
         end,
     })
 
     PresetsTab:CreateButton({
         Name = "AFK Night Farm",
         Callback = function()
-            Settings.FarmMode = "Tween"
-            Settings.FarmSpeed = 75
-            Settings.CoinDelay = 0.01
+            Settings.FarmMode = "Instant TP"
+            Settings.FarmSpeed = 100
+            Settings.CoinDelay = 0
             Settings.MaxBagCapacity = 40
             Settings.ActionOnFull = "Lobby"
             Settings.AvoidMurderer = true
             Settings.AntiAFK = true
             Settings.AutoGrabGun = false
             setAutoFarm(true)
-            notifyUser("ym1co Preset", "Activated AFK Night Farm (Lobby on 40 coins)", 3)
+            notifyUser("ym1co Preset", "Activated AFK Night Farm (No Delay, Lobby on 40 coins)", 3)
         end,
     })
 
