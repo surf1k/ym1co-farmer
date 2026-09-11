@@ -72,8 +72,18 @@
 
 ---
 
-### Шаг 4. Настройка `config.json`
-Открой файл **`config.json`** через Блокнот и проверь ключевые параметры:
+### Шаг 4. Настройка `config.json` (Готовые шаблоны)
+
+Если файла `config.json` ещё нет — `start_all.bat` при первом запуске автоматически скопирует готовый шаблон **`config.example.json`**.  
+Также в папке **`config_templates/`** лежат готовые пресеты под любые задачи:
+- **`config_templates/config.xeno.json`** — Рекомендуемый дефолт под Xeno (Keyless, авто-поиск путей, мульти-окна).
+- **`config_templates/config.low_pc.json`** — Пресет для слабых ПК (лимит 8 окон, задержка 20 сек, защита ОЗУ).
+- **`config_templates/config.funpay.json`** — Пресет с включённой авто-выдачей и авто-поднятием лотов на FunPay.
+- **`config_templates/config.solara.json`** — Шаблон под Solara (до 5 окон).
+
+Чтобы применить любой шаблон — просто скопируй его в корень папки `farm` и переименуй в **`config.json`**.
+
+#### Пример стандартного `config.json`:
 ```json
 {
   "hardware_limits": {
@@ -85,25 +95,22 @@
     "ram_limit_per_bot_mb": 0
   },
   "farm": {
-    "roblox_executable_path": "C:/Users/DDDen/AppData/Local/Roblox/Versions/version-c5aecda2245e4fae/RobloxPlayerBeta.exe",
+    "roblox_executable_path": "",
     "target_level": 100,
     "target_coins": 0,
-    "executor_workspace_path": "C:/Users/DDDen/AppData/Local/Xeno/workspace",
-    "ram_account_data_path": "C:/Users/DDDen/Desktop/farm/RAM/AccountData.json",
+    "executor_workspace_path": "%LOCALAPPDATA%/Xeno/workspace",
+    "ram_account_data_path": "",
     "place_id": 142823291,
     "check_stats_interval_sec": 10
   },
   "funpay": {
-    "enabled": true,
-    "golden_key": "твой_ключ",
-    "lot_id": 76929914
+    "enabled": false
   }
 }
 ```
 
-> **ВАЖНО:**  
-> - `"executor_workspace_path"` должен указывать на воркспейс Xeno: `"C:/Users/DDDen/AppData/Local/Xeno/workspace"`. Все слэши должны быть прямыми `/`!  
-> - `"spawn_cooldown_sec"` установлен на `10` секунд для стабильного поочередного старта окон.
+> 💡 **ФИШКА АВТОПОИСКА (Для любого рандома):**  
+> Если оставить `"roblox_executable_path": ""` и `"ram_account_data_path": ""` пустыми — менеджер **сам автоматически** найдет последнюю версию Roblox и файл базы аккаунтов `AccountData.json` на Рабочем столе! Никаких ручных путей прописывать не нужно!
 
 ---
 
