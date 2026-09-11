@@ -376,7 +376,7 @@ local lastRolesCheck = 0
 
 local function getRoles()
     local now = tick()
-    if (now - lastRolesCheck) < 0.3 then
+    if (now - lastRolesCheck) < 0.1 then
         return cachedRoles
     end
     lastRolesCheck = now
@@ -390,10 +390,16 @@ local function getRoles()
             for _, item in ipairs(container:GetChildren()) do
                 if item:IsA("Tool") then
                     local n = item.Name:lower()
-                    if n:find("gun") or n:find("revolver") or n:find("pistol") then
+                    if n:find("gun") or n:find("revolver") or n:find("pistol") or n:find("luger") or n:find("blaster") or n:find("laser") then
                         hasGun = true
-                    else
+                    elseif n:find("knife") or n:find("blade") or n:find("dagger") or n:find("sword") or n:find("axe") or n:find("scythe") or n:find("cutter") or n:find("cleaver") then
                         hasKnife = true
+                    elseif not (n:find("radio") or n:find("boombox") or n:find("toy") or n:find("emote") or n:find("candy") or n:find("potion") or n:find("pizza") or n:find("drink")) then
+                        if item:FindFirstChild("GunServer") or item:FindFirstChild("GunLocal") or item:FindFirstChild("Shoot") then
+                            hasGun = true
+                        else
+                            hasKnife = true
+                        end
                     end
                 end
             end
@@ -1160,10 +1166,10 @@ local function executeCombatWin(root, char, roles)
     local hum = char:FindFirstChildWhichIsA("Humanoid")
     if not hum then return end
 
-    -- 1. ЕСЛИ У НАС ЕСТЬ ПИСТОЛЕТ
+    -- 1. ЕСЛИ У НАС ЕСТЬ ПИСТОЛЕТ (ШЕРИФ / ПОДОБРАННЫЙ ПИСТОЛЕТ)
     local gun = nil
     for _, item in ipairs(char:GetChildren()) do
-        if item:IsA("Tool") and (item.Name:lower():find("gun") or item.Name:lower():find("revolver") or item.Name:lower():find("pistol")) then
+        if item:IsA("Tool") and (item.Name:lower():find("gun") or item.Name:lower():find("revolver") or item.Name:lower():find("pistol") or item.Name:lower():find("luger") or item.Name:lower():find("blaster") or item.Name:lower():find("laser")) then
             gun = item
             break
         end
@@ -1172,10 +1178,9 @@ local function executeCombatWin(root, char, roles)
         local bp = LocalPlayer:FindFirstChild("Backpack")
         if bp then
             for _, item in ipairs(bp:GetChildren()) do
-                if item:IsA("Tool") and (item.Name:lower():find("gun") or item.Name:lower():find("revolver") or item.Name:lower():find("pistol")) then
+                if item:IsA("Tool") and (item.Name:lower():find("gun") or item.Name:lower():find("revolver") or item.Name:lower():find("pistol") or item.Name:lower():find("luger") or item.Name:lower():find("blaster") or item.Name:lower():find("laser")) then
                     gun = item
                     hum:EquipTool(gun)
-                    task.wait(0.1)
                     break
                 end
             end
@@ -1183,19 +1188,28 @@ local function executeCombatWin(root, char, roles)
     end
 
     if gun then
+        -- Ждем полной физической экипировки оружия в руку
+        if gun.Parent ~= char then
+            hum:EquipTool(gun)
+            local t0 = tick()
+            while gun.Parent ~= char and (tick() - t0) < 0.4 do
+                task.wait(0.02)
+            end
+        end
+
         local targetMurderer = roles.murderer
         if not targetMurderer then
             for _, p in ipairs(Players:GetPlayers()) do
                 if p ~= LocalPlayer and p.Character then
                     for _, item in ipairs(p.Character:GetChildren()) do
-                        if item:IsA("Tool") and not (item.Name:lower():find("gun") or item.Name:lower():find("revolver")) then
+                        if item:IsA("Tool") and (item.Name:lower():find("knife") or item.Name:lower():find("blade") or item.Name:lower():find("dagger") or item.Name:lower():find("sword")) then
                             targetMurderer = p
                             break
                         end
                     end
                     if not targetMurderer and p:FindFirstChild("Backpack") then
                         for _, item in ipairs(p.Backpack:GetChildren()) do
-                            if item:IsA("Tool") and not (item.Name:lower():find("gun") or item.Name:lower():find("revolver")) then
+                            if item:IsA("Tool") and (item.Name:lower():find("knife") or item.Name:lower():find("blade") or item.Name:lower():find("dagger") or item.Name:lower():find("sword")) then
                                 targetMurderer = p
                                 break
                             end
@@ -1207,40 +1221,104 @@ local function executeCombatWin(root, char, roles)
         end
 
         if targetMurderer and targetMurderer.Character then
-            local mRoot = targetMurderer.Character:FindFirstChild("HumanoidRootPart")
-            local mHum = targetMurderer.Character:FindFirstChildWhichIsA("Humanoid")
+            local mChar = targetMurderer.Character
+            local mRoot = mChar:FindFirstChild("HumanoidRootPart")
+            local mHum = mChar:FindFirstChildWhichIsA("Humanoid")
+            local mHead = mChar:FindFirstChild("Head") or mRoot
 
-            if mRoot and mHum and mHum.Health > 0 and mRoot.Position.Y > -15 then
-                -- Безопасная позиция на 12 студов ВЫШЕ маньяка (нож физически не достает!)
-                local safePos = mRoot.Position + Vector3.new(0, 12, 0)
-                root.CFrame = CFrame.lookAt(safePos, mRoot.Position)
-                root.AssemblyLinearVelocity = Vector3.zero
-                Workspace.CurrentCamera.CFrame = CFrame.lookAt(Workspace.CurrentCamera.CFrame.Position, mRoot.Position)
-                task.wait(0.05)
+            if mRoot and mHum and mHum.Health > 0 and mHead and mRoot.Position.Y > -50 then
+                toggleNoclip(true)
+                if currentTween then
+                    currentTween:Cancel()
+                    currentTween = nil
+                end
 
-                -- Стрельба по всем известным ремоутам MM2
-                pcall(function()
-                    for _, desc in ipairs(gun:GetDescendants()) do
-                        if desc:IsA("RemoteEvent") then
-                            desc:FireServer(1, mRoot.Position, "AH")
-                            desc:FireServer(mRoot.Position)
+                -- Функция выстрела ван-тапом: одновременный прострел через все сетевые и локальные каналы
+                local function firePointBlank(targetHeadPos)
+                    -- 1. Удаленные события стрельбы MM2
+                    pcall(function()
+                        local shootRemote = ReplicatedStorage:FindFirstChild("ShootGun", true)
+                        if shootRemote and shootRemote:IsA("RemoteEvent") then
+                            shootRemote:FireServer(1, targetHeadPos, "AH")
+                            shootRemote:FireServer(targetHeadPos)
+                            shootRemote:FireServer(1, targetHeadPos)
                         end
-                    end
-                end)
-                pcall(function()
-                    local shootRemote = ReplicatedStorage:FindFirstChild("ShootGun", true)
-                    if shootRemote and shootRemote:IsA("RemoteEvent") then
-                        shootRemote:FireServer(1, mRoot.Position, "AH")
-                    end
-                end)
+                        local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent", true)
+                        if mainEvent and mainEvent:IsA("RemoteEvent") then
+                            mainEvent:FireServer("ShootGun", targetHeadPos)
+                            mainEvent:FireServer("ShootGun", 1, targetHeadPos, "AH")
+                            mainEvent:FireServer("Shoot", targetHeadPos)
+                        end
+                    end)
 
-                gun:Activate()
-                pcall(function()
-                    VirtualUser:Button1Down(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
+                    -- 2. Внутренние ремоуты оружия
+                    pcall(function()
+                        for _, desc in ipairs(gun:GetDescendants()) do
+                            if desc:IsA("RemoteEvent") then
+                                desc:FireServer(1, targetHeadPos, "AH")
+                                desc:FireServer(targetHeadPos)
+                                desc:FireServer(1, targetHeadPos)
+                                desc:FireServer(mChar)
+                            elseif desc:IsA("RemoteFunction") then
+                                pcall(function() desc:InvokeServer(1, targetHeadPos, "AH") end)
+                            end
+                        end
+                    end)
+
+                    -- 3. Активация инструмента и коннектов
+                    pcall(function()
+                        gun:Activate()
+                        if getconnections then
+                            for _, c in ipairs(getconnections(gun.Activated)) do
+                                pcall(function() c:Fire() end)
+                            end
+                        end
+                    end)
+
+                    -- 4. Прямой клик мышью в центр экрана прямо в лицо маньяка (НЕ 0,0!)
+                    pcall(function()
+                        local cam = Workspace.CurrentCamera
+                        local vp = cam.ViewportSize
+                        local centerVec = Vector2.new(vp.X / 2, vp.Y / 2)
+                        local sPoint, onScreen = cam:WorldToViewportPoint(targetHeadPos)
+                        local targetVec = onScreen and Vector2.new(sPoint.X, sPoint.Y) or centerVec
+
+                        VirtualUser:Button1Down(targetVec, cam.CFrame)
+                        VirtualUser:Button1Up(targetVec, cam.CFrame)
+                        VirtualUser:Button1Down(centerVec, cam.CFrame)
+                        VirtualUser:Button1Up(centerVec, cam.CFrame)
+
+                        local vim = game:GetService("VirtualInputManager")
+                        if vim then
+                            vim:SendMouseButtonEvent(targetVec.X, targetVec.Y, 0, true, game, 0)
+                            vim:SendMouseButtonEvent(targetVec.X, targetVec.Y, 0, false, game, 0)
+                            vim:SendMouseButtonEvent(centerVec.X, centerVec.Y, 0, true, game, 0)
+                            vim:SendMouseButtonEvent(centerVec.X, centerVec.Y, 0, false, game, 0)
+                        end
+                    end)
+                end
+
+                -- ТЕЛЕПОРТАЦИЯ ВПЛОТНУЮ К ЛИЦУ (1.8 студа на уровне глаз) + ВАН-ТАП В ЕБЛЕТ
+                local tStart = tick()
+                while (tick() - tStart) < 0.4 and mHum and mHum.Health > 0 and targetMurderer.Parent do
+                    local headPart = mChar:FindFirstChild("Head") or mRoot
+                    local targetHeadPos = headPart.Position
+                    local lookDir = mRoot.CFrame.LookVector
+
+                    -- Позиция строго вплотную перед лицом маньяка (+0.3 студа над землей)
+                    local pointBlankPos = targetHeadPos + (lookDir * 1.8) + Vector3.new(0, 0.3, 0)
+
+                    root.AssemblyLinearVelocity = Vector3.zero
+                    root.AssemblyAngularVelocity = Vector3.zero
+                    root.CFrame = CFrame.lookAt(pointBlankPos, targetHeadPos)
+                    Workspace.CurrentCamera.CFrame = CFrame.lookAt(pointBlankPos + Vector3.new(0, 0.2, 0), targetHeadPos)
+
+                    firePointBlank(targetHeadPos)
                     task.wait(0.04)
-                    VirtualUser:Button1Up(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
-                end)
-                task.wait(0.25)
+                end
+
+                root.AssemblyLinearVelocity = Vector3.zero
+                task.wait(0.1)
                 return
             end
         end
@@ -1249,7 +1327,7 @@ local function executeCombatWin(root, char, roles)
     -- 2. ЕСЛИ МЫ МАНЬЯК С НОЖОМ
     local knife = nil
     for _, item in ipairs(char:GetChildren()) do
-        if item:IsA("Tool") and not (item.Name:lower():find("gun") or item.Name:lower():find("revolver")) then
+        if item:IsA("Tool") and not (item.Name:lower():find("gun") or item.Name:lower():find("revolver") or item.Name:lower():find("pistol") or item.Name:lower():find("luger") or item.Name:lower():find("blaster") or item.Name:lower():find("laser")) then
             knife = item
             break
         end
@@ -1258,7 +1336,7 @@ local function executeCombatWin(root, char, roles)
         local bp = LocalPlayer:FindFirstChild("Backpack")
         if bp then
             for _, item in ipairs(bp:GetChildren()) do
-                if item:IsA("Tool") and not (item.Name:lower():find("gun") or item.Name:lower():find("revolver")) then
+                if item:IsA("Tool") and not (item.Name:lower():find("gun") or item.Name:lower():find("revolver") or item.Name:lower():find("pistol") or item.Name:lower():find("luger") or item.Name:lower():find("blaster") or item.Name:lower():find("laser")) then
                     knife = item
                     hum:EquipTool(knife)
                     task.wait(0.1)
@@ -1272,6 +1350,15 @@ local function executeCombatWin(root, char, roles)
         local victims = {}
         local sheriffPlayer = roles.sheriff
 
+        -- ВАЖНО: Шерифа убиваем ПЕРВЫМ, чтобы он не успел достать пистолет!
+        if sheriffPlayer and sheriffPlayer.Character then
+            local sHum = sheriffPlayer.Character:FindFirstChildWhichIsA("Humanoid")
+            local sRoot = sheriffPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if sHum and sRoot and sHum.Health > 0 and sRoot.Position.Y > -10 then
+                table.insert(victims, sheriffPlayer)
+            end
+        end
+
         for _, victim in ipairs(Players:GetPlayers()) do
             if victim ~= LocalPlayer and victim ~= sheriffPlayer and victim.Character then
                 local vHum = victim.Character:FindFirstChildWhichIsA("Humanoid")
@@ -1282,14 +1369,6 @@ local function executeCombatWin(root, char, roles)
             end
         end
 
-        if sheriffPlayer and sheriffPlayer.Character then
-            local sHum = sheriffPlayer.Character:FindFirstChildWhichIsA("Humanoid")
-            local sRoot = sheriffPlayer.Character:FindFirstChild("HumanoidRootPart")
-            if sHum and sRoot and sHum.Health > 0 and sRoot.Position.Y > -10 then
-                table.insert(victims, sheriffPlayer)
-            end
-        end
-
         for _, victim in ipairs(victims) do
             if victim.Character then
                 local vHum = victim.Character:FindFirstChildWhichIsA("Humanoid")
@@ -1297,14 +1376,12 @@ local function executeCombatWin(root, char, roles)
 
                 if vHum and vRoot and vHum.Health > 0 then
                     local attackPos = CFrame.new(vRoot.Position.X, math.max(vRoot.Position.Y + 1.5, 2), vRoot.Position.Z)
-                    local tw = TweenService:Create(root, TweenInfo.new(0.25, Enum.EasingStyle.Linear),
-                        { CFrame = attackPos })
-                    tw:Play()
-                    tw.Completed:Wait()
+                    root.AssemblyLinearVelocity = Vector3.zero
+                    root.CFrame = attackPos
 
                     knife:Activate()
                     touchCoin(vRoot, knife:FindFirstChild("Handle") or root)
-                    task.wait(0.12)
+                    task.wait(0.08)
                 end
             end
         end
@@ -1326,22 +1403,31 @@ local function farmStep()
         return
     end
 
-    local container = getCoinContainer()
-    if container and #container:GetChildren() > 0 then
-        if isInLobby(root) then
-            cachedUndergroundSpot = nil
-            if hum.PlatformStand then
-                hum.PlatformStand = false
-                hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-            end
-            if currentTween then
-                currentTween:Cancel()
-                currentTween = nil
-            end
+    if isInLobby(root) then
+        cachedUndergroundSpot = nil
+        if hum.PlatformStand then
+            hum.PlatformStand = false
+            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end
+        if currentTween then
+            currentTween:Cancel()
+            currentTween = nil
+        end
+        return
+    end
+
+    local roles = getRoles()
+
+    -- ЕСЛИ МЫ ШЕРИФ С ПИСТОЛЕТОМ - УБИВАЕМ МАНЬЯКА СРАЗУ ВПЛОТНУЮ, НЕ ЖДЕМ СПАВНА МОНЕТ!
+    if Settings.AutoWinAsRoles and (roles.myRole == "Sheriff" or roles.sheriff == LocalPlayer) then
+        local targetMurderer = roles.murderer
+        if targetMurderer and targetMurderer.Character then
+            executeCombatWin(root, char, roles)
             return
         end
     end
 
+    local container = getCoinContainer()
     if not container or #container:GetChildren() == 0 then
         cachedUndergroundSpot = nil
         if hum.PlatformStand then
@@ -1359,19 +1445,7 @@ local function farmStep()
         hum.PlatformStand = true
     end
 
-    local roles = getRoles()
     local currentCoins = getCoinBagCount()
-
-    -- ЕСЛИ МЫ ШЕРИФ С ПИСТОЛЕТОМ - УБИВАЕМ МАНЬЯКА СРАЗУ, НЕ ЖДЕМ 40 МОНЕТ!
-    if Settings.AutoWinAsRoles and (roles.myRole == "Sheriff" or roles.sheriff == LocalPlayer) then
-        local targetMurderer = roles.murderer
-        if targetMurderer and targetMurderer.Character then
-            executeCombatWin(root, char, roles)
-            return
-        end
-    end
-
-    -- ПОЛНАЯ СУМКА (40 МОНЕТ) -> БОЕВОЙ ВЫХОД
     if currentCoins >= Settings.MaxBagCapacity then
         root.AssemblyLinearVelocity = Vector3.zero
         if currentTween then
