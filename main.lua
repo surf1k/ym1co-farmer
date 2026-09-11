@@ -107,46 +107,28 @@ repeat task.wait() until game:IsLoaded()
 
 local scriptLoadTime = tick()
 
--- ==================== МАКСИМАЛЬНАЯ ОПТИМИЗАЦИЯ ОЗУ И GPU (DISABLE 3D) ====================
+-- ==================== МАКСИМАЛЬНАЯ ОПТИМИЗАЦИЯ ОЗУ И GPU ====================
 local function applyExtremeOptimization()
-    -- 1. Полное отключение 3D рендеринга движка (сводит потребление GPU/VRAM к нулю)
     pcall(function()
         RunService:Set3dRenderingEnabled(false)
     end)
 
-    -- 2. Лок FPS (15 кадров в секунду более чем достаточно для фонового сбора монет)
     pcall(function()
         if setfpscap then
-            setfpscap(15)
+            setfpscap(20)
         end
     end)
 
-    -- 3. Минимальный профиль графики рендера
-    pcall(function()
-        settings().Rendering.QualityLevel = 1
-        settings().Rendering.EditQualityLevel = 1
-    end)
-
-    -- 4. Очистка глобального освещения, теней и пост-эффектов
+    pcall(function() settings().Rendering.QualityLevel = 1 end)
     pcall(function()
         Lighting.GlobalShadows = false
         Lighting.FogEnd = 9e9
         Lighting.Brightness = 0
-        Lighting.ClockTime = 14
 
-        for _, v in ipairs(Lighting:GetChildren()) do
-            if v:IsA("PostProcessEffect") or v:IsA("Atmosphere") or v:IsA("Sky") or v:IsA("Clouds") then
-                v.Enabled = false
-            end
-        end
-    end)
-
-    -- 5. Очистка текстур, звуков, частиц со всех объектов в игре
-    pcall(function()
         for _, v in ipairs(game:GetDescendants()) do
             if v:IsA("Decal") or v:IsA("Texture") then
                 v.Transparency = 1
-            elseif v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Explosion") or v:IsA("Sparkles") or v:IsA("Highlight") then
+            elseif v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Explosion") then
                 v.Enabled = false
             elseif v:IsA("Sound") then
                 v.Volume = 0
@@ -154,37 +136,11 @@ local function applyExtremeOptimization()
             elseif v:IsA("BasePart") and not v:IsA("MeshPart") then
                 v.Material = Enum.Material.SmoothPlastic
                 v.Reflectance = 0
-                v.CastShadow = false
             end
-        end
-    end)
-
-    -- 6. Авто-очистка для всех динамически появляющихся объектов (карты, скины, эффекты ножей)
-    pcall(function()
-        if not getgenv()._mm2_descendant_hook then
-            getgenv()._mm2_descendant_hook = Workspace.DescendantAdded:Connect(function(v)
-                if not Settings.ExtremeRAMSaver then return end
-                pcall(function()
-                    if v:IsA("Decal") or v:IsA("Texture") then
-                        v.Transparency = 1
-                    elseif v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Explosion") or v:IsA("Sparkles") or v:IsA("Highlight") then
-                        v.Enabled = false
-                    elseif v:IsA("Sound") then
-                        v.Volume = 0
-                        v:Stop()
-                    elseif v:IsA("BasePart") and not v:IsA("MeshPart") then
-                        v.Material = Enum.Material.SmoothPlastic
-                        v.Reflectance = 0
-                        v.CastShadow = false
-                    end
-                end)
-            end)
         end
     end)
 end
 
--- Активируем отключение 3D и сжатие графики сразу при загрузке скрипта
-applyExtremeOptimization()
 
 -- Load Rayfield UI Library
 local Rayfield = nil
@@ -270,11 +226,11 @@ end
 -- ==================== НАСТРОЙКИ ПО УМОЛЧАНИЮ ====================
 local Settings = {
     AutoFarm = true,
-    FarmSpeed = 100,
-    FarmMode = "Instant TP",
-    CoinDelay = 0,
+    FarmSpeed = 50,
+    FarmMode = "Tween",
+    CoinDelay = 0.01,
     MaxBagCapacity = 40,
-    ActionOnFull = "Lobby",
+    ActionOnFull = "CombatWin",
 
     AvoidMurderer = true,
     AvoidDistance = 35,
@@ -300,8 +256,8 @@ local Settings = {
     FPSBooster = true,
     AntiAFK = true,
     ExtremeRAMSaver = true,
-    AutoServerHopOnBotCollision = false,
-    AutoHopLowPlayerCount = false,
+    AutoServerHopOnBotCollision = true,
+    AutoHopLowPlayerCount = true,
     MinPlayersInServer = 4,
     BotUsernamePrefix = "Fmr_",
 
@@ -369,15 +325,15 @@ local function setAutoFarm(state)
 end
 
 local function getCoinContainer()
-    for _, obj in ipairs(Workspace:GetChildren()) do
-        local cc = obj:FindFirstChild("CoinContainer", true)
-        if cc and #cc:GetChildren() > 0 then
-            return cc
-        end
+    local cc = Workspace:FindFirstChild("CoinContainer", true)
+    if cc and #cc:GetChildren() > 0 then
+        return cc
     end
-    local direct = Workspace:FindFirstChild("CoinContainer", true)
-    if direct and #direct:GetChildren() > 0 then
-        return direct
+    for _, obj in ipairs(Workspace:GetChildren()) do
+        local c = obj:FindFirstChild("CoinContainer")
+        if c and #c:GetChildren() > 0 then
+            return c
+        end
     end
     return nil
 end
@@ -392,20 +348,20 @@ local function getLobbyCFrame()
     if lobby then
         local spawns = lobby:FindFirstChild("Spawns") or lobby:FindFirstChild("SpawnLocations")
         if spawns then
-            local sp = spawns:FindFirstChildWhichIsA("SpawnLocation", true) or spawns:FindFirstChildWhichIsA("BasePart", true)
-            if sp then return sp.CFrame + Vector3.new(0, 3, 0) end
+            local sp = spawns:FindFirstChildWhichIsA("BasePart", true)
+            if sp then return sp.CFrame end
         end
-        local part = lobby:FindFirstChildWhichIsA("SpawnLocation", true)
-        if part then return part.CFrame + Vector3.new(0, 3, 0) end
+        local part = lobby:FindFirstChildWhichIsA("BasePart", true)
+        if part then return part.CFrame end
     end
     return CFrame.new(-108, 140, -11)
 end
 
 local function isInLobby(root)
     if not root then return false end
-    -- В MM2 лобби парит в воздухе на высоте Y > 100 (спавн ~ -108, 140, -11).
-    -- Все игровые карты MM2 расположены внизу (Y < 75).
-    return root.Position.Y > 100
+    local lobbyCF = getLobbyCFrame()
+    local dist = (root.Position - lobbyCF.Position).Magnitude
+    return dist < 60
 end
 
 -- Определение ролей
@@ -502,85 +458,61 @@ local function getCoinBagCount()
         return 0
     end
 
-    local currentCoins = 0
-    local found = false
+    local count = 0
 
     pcall(function()
         local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
         if not playerGui then return end
         local mainGui = playerGui:FindFirstChild("MainGUI")
         if not mainGui then return end
+
         local gameGui = mainGui:FindFirstChild("Game")
-        if not gameGui then return end
+        local coinBag = gameGui and (gameGui:FindFirstChild("CoinBag") or gameGui:FindFirstChild("Bag"))
 
-        local coinBag = gameGui:FindFirstChild("CoinBag") or gameGui:FindFirstChild("Bag")
-        local labels = {}
-
+        -- 2. Читаем строго из контейнера Game.CoinBag
         if coinBag then
             for _, lbl in ipairs(coinBag:GetDescendants()) do
                 if lbl:IsA("TextLabel") and lbl.Visible and lbl.TextTransparency < 0.5 and lbl.Text ~= "" then
-                    table.insert(labels, lbl)
-                end
-            end
-        end
-
-        if #labels == 0 then
-            local camera = Workspace.CurrentCamera
-            local viewportSize = camera and camera.ViewportSize or Vector2.new(1920, 1080)
-            for _, lbl in ipairs(gameGui:GetDescendants()) do
-                local inBlacklist = lbl:FindFirstAncestor("Leaderboard") or lbl:FindFirstAncestor("PlayerList") or
-                    lbl:FindFirstAncestor("Dock") or lbl:FindFirstAncestor("Shop") or lbl:FindFirstAncestor("Inventory")
-                if not inBlacklist and lbl:IsA("TextLabel") and lbl.Visible and lbl.TextTransparency < 0.5 and lbl.Text ~= "" then
-                    local pos = lbl.AbsolutePosition
-                    if pos.X > (viewportSize.X * 0.60) and pos.Y > (viewportSize.Y * 0.60) then
-                        table.insert(labels, lbl)
+                    local t = lbl.Text:lower()
+                    if t:find("full") then
+                        count = Settings.MaxBagCapacity
+                        return
+                    end
+                    local n = tonumber(lbl.Text:match("(%d+)"))
+                    if n and n <= Settings.MaxBagCapacity then
+                        count = math.max(count, n)
                     end
                 end
             end
         end
 
-        for _, lbl in ipairs(labels) do
-            local raw = lbl.Text
-            local lower = raw:lower()
+        -- 3. Резервный скан в игре С ИСКЛЮЧЕНИЕМ списка игроков (Leaderboard)
+        if count == 0 and gameGui then
+            local camera = Workspace.CurrentCamera
+            local viewportSize = camera and camera.ViewportSize or Vector2.new(1920, 1080)
 
-            if lower:find("full") then
-                currentCoins = Settings.MaxBagCapacity
-                found = true
-                return
-            end
-
-            -- Парсим строго формат X/Y (например "0/40", "15 / 40")
-            local cur, cap = raw:match("(%d+)%s*/%s*(%d+)")
-            if cur and cap then
-                currentCoins = tonumber(cur) or 0
-                local maxCap = tonumber(cap)
-                if maxCap and maxCap > 0 and maxCap <= 50 then
-                    Settings.MaxBagCapacity = maxCap
-                end
-                found = true
-                return
-            end
-        end
-
-        -- Если формата X/Y нет, ищем одиночную цифру сбора, но ИСКЛЮЧАЕМ статические лейблы вместимости
-        if not found then
-            for _, lbl in ipairs(labels) do
-                local name = lbl.Name:lower()
-                -- Пропускаем лейблы с названиями Max, Cap, Total, Capacity
-                if not (name:find("max") or name:find("cap") or name:find("total")) then
-                    local single = tonumber(lbl.Text:match("^%s*(%d+)%s*$"))
-                    -- Одиночная цифра принимается, только если она меньше лимита сумки (чтобы не спутать со статической цифрой 40)
-                    if single and single < Settings.MaxBagCapacity then
-                        currentCoins = single
-                        found = true
-                        break
+            for _, lbl in ipairs(gameGui:GetDescendants()) do
+                local inLeaderboard = lbl:FindFirstAncestor("Leaderboard") or lbl:FindFirstAncestor("PlayerList") or
+                    lbl:FindFirstAncestor("Dock") or lbl:FindFirstAncestor("Shop")
+                if not inLeaderboard and lbl:IsA("TextLabel") and lbl.Visible and lbl.TextTransparency < 0.5 and lbl.Text ~= "" then
+                    local pos = lbl.AbsolutePosition
+                    if pos.X > (viewportSize.X * 0.65) and pos.Y > (viewportSize.Y * 0.65) then
+                        local t = lbl.Text:lower():gsub("%s+", "")
+                        if t:find("full") then
+                            count = Settings.MaxBagCapacity
+                            return
+                        end
+                        local n = tonumber(lbl.Text:match("(%d+)"))
+                        if n and n <= Settings.MaxBagCapacity then
+                            count = math.max(count, n)
+                        end
                     end
                 end
             end
         end
     end)
 
-    return currentCoins
+    return count
 end
 
 local function getAccountStats()
@@ -1125,15 +1057,8 @@ local function touchCoin(coinPart, root)
     if firetouchinterest then
         pcall(function()
             firetouchinterest(root, coinPart, 0)
+            task.wait(0.01)
             firetouchinterest(root, coinPart, 1)
-            if coinPart.Parent and coinPart.Parent:IsA("Model") then
-                for _, child in ipairs(coinPart.Parent:GetChildren()) do
-                    if child:IsA("BasePart") and child ~= coinPart then
-                        firetouchinterest(root, child, 0)
-                        firetouchinterest(root, child, 1)
-                    end
-                end
-            end
         end)
     end
 end
@@ -1157,16 +1082,6 @@ end
 
 local ignoredCoins = {}
 
-local function isCoinValid(part)
-    if not part or not part.Parent or not part:IsDescendantOf(Workspace) then
-        return false
-    end
-    if part.Transparency >= 0.99 then
-        return false
-    end
-    return true
-end
-
 local function getNearestCoin(root)
     local container = getCoinContainer()
     if not container or not root then return nil end
@@ -1182,14 +1097,8 @@ local function getNearestCoin(root)
 
     for _, coin in ipairs(container:GetChildren()) do
         if not ignoredCoins[coin] then
-            local part = nil
-            if coin:IsA("BasePart") then
-                part = coin
-            elseif coin:IsA("Model") then
-                part = coin.PrimaryPart or coin:FindFirstChild("Coin_Visual") or coin:FindFirstChild("Coin") or coin:FindFirstChildWhichIsA("BasePart", true)
-            end
-
-            if part and not ignoredCoins[part] and isCoinValid(part) then
+            local part = coin:IsA("BasePart") and coin or coin:FindFirstChildWhichIsA("BasePart", true)
+            if part and not ignoredCoins[part] then
                 local d = (part.Position - myPos).Magnitude
                 if d < minDist then
                     minDist = d
@@ -1250,12 +1159,6 @@ end)
 local function executeCombatWin(root, char, roles)
     local hum = char:FindFirstChildWhichIsA("Humanoid")
     if not hum or hum.Health <= 0 then return end
-
-    -- ЖЕСТКАЯ ЗАЩИТА: НИ В КОЕМ СЛУЧАЕ НЕ АТАКУЕМ, ЕСЛИ МЕШОК НЕ СОБРАН ПОЛНОСТЬЮ!
-    local currentCoins = getCoinBagCount()
-    if currentCoins < Settings.MaxBagCapacity then
-        return
-    end
 
     -- 1. ЕСЛИ У НАС ЕСТЬ ПИСТОЛЕТ (ШЕРИФ / ПОДОБРАННЫЙ ПИСТОЛЕТ)
     local function isGunItem(item)
@@ -1337,19 +1240,26 @@ local function executeCombatWin(root, char, roles)
                     currentTween = nil
                 end
 
-                -- Временно включаем 3D-рендеринг для 100% точности лучей и выстрела
+                -- Временно включаем 3D-рендеринг для 100% точности лучей и Mouse.Hit
                 pcall(function() RunService:Set3dRenderingEnabled(true) end)
 
-                local function fireAtMurderer(targetHeadPos)
+                -- Функция выстрела ван-тапом: одновременный прострел через все сетевые и локальные каналы
+                local function firePointBlank(targetHeadPos)
                     -- 1. Удаленные события стрельбы MM2
                     pcall(function()
                         local shootRemote = ReplicatedStorage:FindFirstChild("ShootGun", true)
                         if shootRemote and shootRemote:IsA("RemoteEvent") then
                             shootRemote:FireServer(1, targetHeadPos, "AH")
+                            shootRemote:FireServer(targetHeadPos)
+                            shootRemote:FireServer(1, targetHeadPos)
+                            shootRemote:FireServer(targetHeadPos, root.Position)
                         end
                         local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent", true)
                         if mainEvent and mainEvent:IsA("RemoteEvent") then
                             mainEvent:FireServer("ShootGun", targetHeadPos)
+                            mainEvent:FireServer("ShootGun", 1, targetHeadPos, "AH")
+                            mainEvent:FireServer("Shoot", targetHeadPos)
+                            mainEvent:FireServer("ShootGun", targetHeadPos, root.Position)
                         end
                     end)
 
@@ -1358,50 +1268,76 @@ local function executeCombatWin(root, char, roles)
                         for _, desc in ipairs(gun:GetDescendants()) do
                             if desc:IsA("RemoteEvent") then
                                 desc:FireServer(1, targetHeadPos, "AH")
+                                desc:FireServer(targetHeadPos)
+                                desc:FireServer(1, targetHeadPos)
+                                desc:FireServer(mChar)
+                                desc:FireServer(targetHeadPos, root.Position)
+                            elseif desc:IsA("RemoteFunction") then
+                                pcall(function() desc:InvokeServer(1, targetHeadPos, "AH") end)
+                                pcall(function() desc:InvokeServer(targetHeadPos) end)
                             end
                         end
                     end)
 
-                    -- 3. Активация инструмента
+                    -- 3. Активация инструмента и коннектов
                     pcall(function()
                         gun:Activate()
+                        if getconnections then
+                            for _, c in ipairs(getconnections(gun.Activated)) do
+                                pcall(function() c:Fire() end)
+                            end
+                        end
                     end)
 
-                    -- 4. Аимлок камеры и мыши прямо в голову
+                    -- 4. Аимлок камеры и курсора мыши прямо в голову маньяка
                     pcall(function()
                         local cam = Workspace.CurrentCamera
+                        local vp = cam.ViewportSize
+                        local centerVec = Vector2.new(vp.X / 2, vp.Y / 2)
                         local sPoint, onScreen = cam:WorldToViewportPoint(targetHeadPos)
-                        local targetVec = onScreen and Vector2.new(sPoint.X, sPoint.Y) or Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+                        local targetVec = (onScreen and Vector2.new(sPoint.X, sPoint.Y)) or centerVec
 
                         local vim = game:GetService("VirtualInputManager")
                         if vim then
                             vim:SendMouseMoveEvent(targetVec.X, targetVec.Y, game)
                             vim:SendMouseButtonEvent(targetVec.X, targetVec.Y, 0, true, game, 0)
-                            task.wait(0.04)
                             vim:SendMouseButtonEvent(targetVec.X, targetVec.Y, 0, false, game, 0)
+                            vim:SendMouseButtonEvent(centerVec.X, centerVec.Y, 0, true, game, 0)
+                            vim:SendMouseButtonEvent(centerVec.X, centerVec.Y, 0, false, game, 0)
                         end
 
                         VirtualUser:Button1Down(targetVec, cam.CFrame)
-                        task.wait(0.04)
                         VirtualUser:Button1Up(targetVec, cam.CFrame)
+                        VirtualUser:Button1Down(centerVec, cam.CFrame)
+                        VirtualUser:Button1Up(centerVec, cam.CFrame)
+                    end)
+
+                    -- 5. Запасной клик
+                    pcall(function()
+                        if mouse1click then
+                            mouse1click()
+                        end
                     end)
                 end
 
-                -- БЕЗОПАСНАЯ СТРЕЛЬБА С ВЫСОТЫ 14 СТУДОВ НАД ГОЛОВОЙ МАНЬЯКА!
-                -- Нож маньяка бьет только на 4 студа. На высоте 14 студов маньяк ФИЗИЧЕСКИ НЕ МОЖЕТ достать ножом!
+                -- ТЕЛЕПОРТАЦИЯ: СТРОГО СО СПИНЫ МАНЬЯКА (2.8 студа сзади, 1.4 студа выше головы)
+                -- Маньяк бьет ножом ТОЛЬКО вперед! Находясь сзади, бот защищен от ножа на 100%!
                 local tStart = tick()
-                while (tick() - tStart) < 2.0 and hum.Health > 0 and mHum and mHum.Health > 0 and targetMurderer.Parent do
+                while (tick() - tStart) < 1.2 and hum.Health > 0 and mHum and mHum.Health > 0 and targetMurderer.Parent do
                     local headPart = mChar:FindFirstChild("Head") or mRoot
                     local targetHeadPos = headPart.Position
-                    local safeElevatedPos = targetHeadPos + Vector3.new(0, 14, 0)
+                    local lookDir = mRoot.CFrame.LookVector
+
+                    -- Позиция вплотную за спиной маньяка (минус lookDir), глядя сверху вниз прямо в голову
+                    local pointBlankBehindPos = targetHeadPos - (lookDir * 2.8) + Vector3.new(0, 1.4, 0)
 
                     root.AssemblyLinearVelocity = Vector3.zero
                     root.AssemblyAngularVelocity = Vector3.zero
-                    root.CFrame = CFrame.lookAt(safeElevatedPos, targetHeadPos)
-                    Workspace.CurrentCamera.CFrame = CFrame.lookAt(safeElevatedPos + Vector3.new(0, 0.5, 0), targetHeadPos)
+                    root.CFrame = CFrame.lookAt(pointBlankBehindPos, targetHeadPos)
+                    Workspace.CurrentCamera.CFrame = CFrame.lookAt(pointBlankBehindPos + Vector3.new(0, 0.4, 0), targetHeadPos)
 
-                    fireAtMurderer(targetHeadPos)
-                    task.wait(0.4)
+                    firePointBlank(targetHeadPos)
+                    task.wait(0.05)
                 end
 
                 pcall(function() RunService:Set3dRenderingEnabled(false) end)
@@ -1493,24 +1429,6 @@ local function farmStep()
         return
     end
 
-    -- 1. Сначала проверяем контейнер монет: если раунд не идет или монеты не появились
-    local container = getCoinContainer()
-    if not container or #container:GetChildren() == 0 then
-        cachedUndergroundSpot = nil
-        emptyCoinsSince = nil
-        if hum.PlatformStand then
-            hum.PlatformStand = false
-            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-        end
-        if currentTween then
-            currentTween:Cancel()
-            currentTween = nil
-        end
-        task.wait(0.3)
-        return
-    end
-
-    -- 2. Если игрок в лобби (ждет очереди / spectator)
     if isInLobby(root) then
         cachedUndergroundSpot = nil
         emptyCoinsSince = nil
@@ -1522,14 +1440,13 @@ local function farmStep()
             currentTween:Cancel()
             currentTween = nil
         end
-        task.wait(0.3)
         return
     end
 
     local roles = getRoles()
     local currentCoins = getCoinBagCount()
 
-    -- 3. СТРОГИЙ ПРИОРИТЕТ: ТОЛЬКО ЕСЛИ МЕШОК ДЕЙСТВИТЕЛЬНО ПОЛОН (>= MaxBagCapacity, 40 МОНЕТ)
+    -- 1. СТРОГИЙ ПРИОРИТЕТ: ЕСЛИ МЕШОК ПОЛОН (>= MaxBagCapacity, 40 МОНЕТ) -> ВЫИГРЫВАЕМ РАУНД!
     if currentCoins >= Settings.MaxBagCapacity then
         emptyCoinsSince = nil
         root.AssemblyLinearVelocity = Vector3.zero
@@ -1537,8 +1454,66 @@ local function farmStep()
             currentTween:Cancel(); currentTween = nil
         end
 
-        -- ТОЛЬКО если пользователь явно выбрал действие "CombatWin" при полном мешке
-        if Settings.ActionOnFull == "CombatWin" then
+        local bp = LocalPlayer:FindFirstChild("Backpack")
+        local hasGunOrKnife = false
+        for _, item in ipairs(char:GetChildren()) do
+            if item:IsA("Tool") then
+                hasGunOrKnife = true
+                break
+            end
+        end
+        if not hasGunOrKnife and bp then
+            for _, item in ipairs(bp:GetChildren()) do
+                if item:IsA("Tool") then
+                    hasGunOrKnife = true
+                    break
+                end
+            end
+        end
+
+        if hasGunOrKnife or roles.myRole == "Sheriff" or roles.myRole == "Murderer" then
+            executeCombatWin(root, char, roles)
+            task.wait(1.5)
+            return
+        end
+
+        if Settings.ActionOnFull == "Lobby" or Settings.ActionOnFull == "CombatWin" then
+            local lobbySpot = getLobbyCFrame()
+            local tw = TweenService:Create(root, TweenInfo.new(0.5, Enum.EasingStyle.Linear), { CFrame = lobbySpot })
+            tw:Play()
+            tw.Completed:Wait()
+            task.wait(1.5)
+        elseif Settings.ActionOnFull == "Underground" then
+            toggleNoclip(true)
+            local safeSpot = getUndergroundCFrame(root)
+            local tw = TweenService:Create(root, TweenInfo.new(0.35, Enum.EasingStyle.Linear), { CFrame = safeSpot })
+            tw:Play()
+            tw.Completed:Wait()
+            task.wait(1.5)
+        elseif Settings.ActionOnFull == "Server Hop" then
+            hopToPopulatedServer()
+            task.wait(5)
+        end
+        return
+    end
+
+    -- 2. МЕШОК НЕ ПОЛОН: СТРОГО ФАРМИМ МОНЕТЫ И НЕ ЛЕЗЕМ К МАНЬЯКУ!
+    local container = getCoinContainer()
+    if not container or #container:GetChildren() == 0 then
+        cachedUndergroundSpot = nil
+        if hum.PlatformStand then
+            hum.PlatformStand = false
+            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end
+        if currentTween then
+            currentTween:Cancel()
+            currentTween = nil
+        end
+
+        -- Запасной случай: если монет нет на карте больше 8 секунд и у нас есть оружие
+        if not emptyCoinsSince then
+            emptyCoinsSince = tick()
+        elseif (tick() - emptyCoinsSince) > 8.0 and currentCoins >= Settings.MaxBagCapacity then
             local bp = LocalPlayer:FindFirstChild("Backpack")
             local hasGunOrKnife = false
             for _, item in ipairs(char:GetChildren()) do
@@ -1555,41 +1530,14 @@ local function farmStep()
                 return
             end
         end
-
-        -- Безопасный выход из зоны риска при собранных 40 монетах (гарантированное выживание)
-        if Settings.ActionOnFull == "Underground" then
-            toggleNoclip(true)
-            local safeSpot = getUndergroundCFrame(root)
-            if Settings.FarmMode == "Instant TP" then
-                root.CFrame = safeSpot
-                root.AssemblyLinearVelocity = Vector3.zero
-            else
-                local tw = TweenService:Create(root, TweenInfo.new(0.35, Enum.EasingStyle.Linear), { CFrame = safeSpot })
-                tw:Play()
-                tw.Completed:Wait()
-            end
-            task.wait(1.5)
-        elseif Settings.ActionOnFull == "Server Hop" then
-            hopToPopulatedServer()
-            task.wait(5)
-        else
-            -- По умолчанию "Lobby": безопасный уход в лобби
-            local lobbySpot = getLobbyCFrame()
-            if Settings.FarmMode == "Instant TP" then
-                root.CFrame = lobbySpot
-                root.AssemblyLinearVelocity = Vector3.zero
-            else
-                local tw = TweenService:Create(root, TweenInfo.new(0.5, Enum.EasingStyle.Linear), { CFrame = lobbySpot })
-                tw:Play()
-                tw.Completed:Wait()
-            end
-            task.wait(1.5)
-        end
         return
     end
 
-    -- 4. МЕШОК НЕ ПОЛОН: СТРОГО ФАРМИМ МОНЕТЫ И НИКОГДА НЕ ЛЕЗЕМ К МАНЬЯКУ!
     emptyCoinsSince = nil
+
+    if not hum.PlatformStand then
+        hum.PlatformStand = true
+    end
 
     if Settings.AutoGrabGun then
         local gun = getGunDrop()
@@ -1597,119 +1545,80 @@ local function farmStep()
             local gp = gun:IsA("BasePart") and gun or gun:FindFirstChildWhichIsA("BasePart", true)
             if gp then
                 local dist = (gp.Position - root.Position).Magnitude
-                if Settings.FarmMode == "Instant TP" then
-                    root.CFrame = gp.CFrame + Vector3.new(0, 1.5, 0)
-                    root.AssemblyLinearVelocity = Vector3.zero
-                    touchCoin(gp, root)
-                    task.wait(0.05)
-                else
-                    local tTime = math.clamp(dist / Settings.FarmSpeed, 0.05, 1.5)
-                    local tw = TweenService:Create(root, TweenInfo.new(tTime, Enum.EasingStyle.Linear),
-                        { CFrame = gp.CFrame + Vector3.new(0, 1.5, 0) })
-                    tw:Play()
-                    tw.Completed:Wait()
-                    touchCoin(gp, root)
-                    task.wait(0.1)
-                end
+                local tTime = math.clamp(dist / Settings.FarmSpeed, 0.05, 1.5)
+                local tw = TweenService:Create(root, TweenInfo.new(tTime, Enum.EasingStyle.Linear),
+                    { CFrame = gp.CFrame + Vector3.new(0, 1.5, 0) })
+                tw:Play()
+                tw.Completed:Wait()
+                touchCoin(gp, root)
+                task.wait(0.1)
                 if Settings.GunPriority then return end
             end
         end
     end
 
     local targetPart = getNearestCoin(root)
-    if not targetPart or not targetPart:IsDescendantOf(Workspace) then
-        if hum.PlatformStand then
-            hum.PlatformStand = false
-            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+    if targetPart and targetPart:IsDescendantOf(Workspace) then
+        toggleNoclip(true)
+
+        local targetPos = targetPart.Position
+        local dist = (targetPos - root.Position).Magnitude
+
+        if Settings.FarmMode == "Instant TP" then
+            root.CFrame = targetPart.CFrame
+            root.AssemblyLinearVelocity = Vector3.zero
+        else
+            local tTime = math.clamp(dist / Settings.FarmSpeed, 0.04, 1.8)
+            local tweenInfo = TweenInfo.new(tTime, Enum.EasingStyle.Linear)
+            currentTween = TweenService:Create(root, tweenInfo, { CFrame = targetPart.CFrame })
+            currentTween:Play()
+
+            local startTween = tick()
+            while currentTween and currentTween.PlaybackState == Enum.PlaybackState.Playing and (tick() - startTween) < (tTime + 0.05) do
+                if (root.Position - targetPart.Position).Magnitude <= 3.2 then
+                    break
+                end
+                task.wait(0.02)
+            end
+
+            if currentTween then
+                currentTween:Cancel(); currentTween = nil
+            end
         end
-        task.wait(0.1)
-        return
-    end
 
-    toggleNoclip(true)
+        local startGrab = tick()
 
-    local targetPos = targetPart.Position
-    local dist = (targetPos - root.Position).Magnitude
-
-    if Settings.FarmMode == "Instant TP" then
-        root.CFrame = targetPart.CFrame
-        root.AssemblyLinearVelocity = Vector3.zero
-        touchCoin(targetPart, root)
-    else
-        if not hum.PlatformStand then
-            hum.PlatformStand = true
-        end
-
-        local tTime = math.clamp(dist / Settings.FarmSpeed, 0.03, 0.85)
-        local tweenInfo = TweenInfo.new(tTime, Enum.EasingStyle.Linear)
-        currentTween = TweenService:Create(root, tweenInfo, { CFrame = targetPart.CFrame })
-        currentTween:Play()
-
-        local startTween = tick()
-        while currentTween and currentTween.PlaybackState == Enum.PlaybackState.Playing and (tick() - startTween) < (tTime + 0.05) do
-            if not isCoinValid(targetPart) then
-                currentTween:Cancel()
-                currentTween = nil
+        while targetPart and targetPart:IsDescendantOf(Workspace) and targetPart:IsDescendantOf(container) do
+            if (tick() - startGrab) > 0.35 then
+                ignoredCoins[targetPart] = tick() + 4.0
                 break
             end
 
-            if (root.Position - targetPart.Position).Magnitude <= 3.2 then
+            root.CFrame = targetPart.CFrame
+            root.AssemblyLinearVelocity = Vector3.zero
+            touchCoin(targetPart, root)
+
+            task.wait(0.02)
+
+            if not targetPart.Parent or not targetPart:IsDescendantOf(container) then
                 break
             end
-            task.wait(0.01)
         end
 
-        if currentTween then
-            currentTween:Cancel(); currentTween = nil
-        end
-    end
-
-    local startGrab = tick()
-    local initialCoins = currentCoins
-
-    while targetPart and targetPart:IsDescendantOf(Workspace) and isCoinValid(targetPart) do
-        -- 1. Трекинг нашего мешка: если монета зачислена в мешок - мгновенно летим к следующей!
-        if getCoinBagCount() > initialCoins then
-            ignoredCoins[targetPart] = tick() + 3.0
-            if targetPart.Parent and targetPart.Parent ~= container then
-                ignoredCoins[targetPart.Parent] = tick() + 3.0
-            end
-            break
+        ignoredCoins[targetPart] = tick() + 2.0
+        if targetPart.Parent and targetPart.Parent ~= container then
+            ignoredCoins[targetPart.Parent] = tick() + 2.0
         end
 
-        -- 2. Если прошло больше 0.25 секунд, а монета не подобралась (не задерживаемся на ней)
-        if (tick() - startGrab) > 0.25 then
-            ignoredCoins[targetPart] = tick() + 2.5
-            if targetPart.Parent and targetPart.Parent ~= container then
-                ignoredCoins[targetPart.Parent] = tick() + 2.5
-            end
-            break
+        if Settings.CoinDelay > 0 then
+            task.wait(Settings.CoinDelay)
         end
-
-        root.CFrame = targetPart.CFrame
-        root.AssemblyLinearVelocity = Vector3.zero
-        touchCoin(targetPart, root)
-
-        task.wait(0.02)
-
-        if not targetPart.Parent or not targetPart:IsDescendantOf(container) then
-            break
-        end
-    end
-
-    ignoredCoins[targetPart] = tick() + 2.0
-    if targetPart.Parent and targetPart.Parent ~= container then
-        ignoredCoins[targetPart.Parent] = tick() + 2.0
-    end
-
-    if Settings.CoinDelay > 0 then
-        task.wait(Settings.CoinDelay)
     end
 end
 
 task.spawn(function()
     while true do
-        task.wait(0.01)
+        task.wait(0.02)
         pcall(farmStep)
     end
 end)
@@ -1730,18 +1639,17 @@ if Window then
     PresetsTab:CreateButton({
         Name = "Safe Farm & Auto-Lobby Exit",
         Callback = function()
-            Settings.FarmMode = "Instant TP"
-            Settings.FarmSpeed = 100
-            Settings.CoinDelay = 0
+            Settings.FarmMode = "Tween"
+            Settings.FarmSpeed = 50
+            Settings.CoinDelay = 0.01
             Settings.MaxBagCapacity = 40
-            Settings.ActionOnFull = "Lobby"
+            Settings.ActionOnFull = "CombatWin"
             Settings.AvoidMurderer = true
             Settings.AvoidDistance = 35
             Settings.AvoidAction = "Kite"
             Settings.AutoHopAfterRound = false
-            Settings.AutoGrabGun = false
             setAutoFarm(true)
-            notifyUser("ym1co Preset", "Activated Safe Farm (No Delay, Lobby on 40 coins)", 3)
+            notifyUser("ym1co Preset", "Activated Combat Farm (~1s/coin)", 3)
         end,
     })
 
@@ -1749,30 +1657,28 @@ if Window then
         Name = "Rage Farm",
         Callback = function()
             Settings.FarmMode = "Instant TP"
-            Settings.FarmSpeed = 100
-            Settings.CoinDelay = 0
+            Settings.FarmSpeed = 65
+            Settings.CoinDelay = 0.01
             Settings.MaxBagCapacity = 40
-            Settings.ActionOnFull = "Lobby"
+            Settings.ActionOnFull = "CombatWin"
             Settings.AvoidMurderer = true
-            Settings.AutoGrabGun = false
             setAutoFarm(true)
-            notifyUser("ym1co Preset", "Activated Rage Farm (No Delay, Lobby on 40 coins)", 3)
+            notifyUser("ym1co Preset", "Activated Rage Farm", 3)
         end,
     })
 
     PresetsTab:CreateButton({
         Name = "AFK Night Farm",
         Callback = function()
-            Settings.FarmMode = "Instant TP"
-            Settings.FarmSpeed = 100
-            Settings.CoinDelay = 0
+            Settings.FarmMode = "Tween"
+            Settings.FarmSpeed = 50
+            Settings.CoinDelay = 0.01
             Settings.MaxBagCapacity = 40
-            Settings.ActionOnFull = "Lobby"
+            Settings.ActionOnFull = "Server Hop"
             Settings.AvoidMurderer = true
             Settings.AntiAFK = true
-            Settings.AutoGrabGun = false
             setAutoFarm(true)
-            notifyUser("ym1co Preset", "Activated AFK Night Farm (No Delay, Lobby on 40 coins)", 3)
+            notifyUser("ym1co Preset", "Activated AFK Night Farm (~1s/coin)", 3)
         end,
     })
 
@@ -1828,8 +1734,8 @@ if Window then
 
     FarmTab:CreateDropdown({
         Name = "Action on Full",
-        Options = { "Lobby", "Underground", "CombatWin", "Server Hop" },
-        CurrentOption = { "Lobby" },
+        Options = { "CombatWin", "Lobby", "Underground", "Server Hop" },
+        CurrentOption = { "CombatWin" },
         MultipleOptions = false,
         Flag = "UserActionOnFull",
         Callback = function(Option)
@@ -1939,7 +1845,7 @@ if Window then
 
     CombatTab:CreateToggle({
         Name = "Auto-Win when Full Bag",
-        CurrentValue = false,
+        CurrentValue = true,
         Flag = "UserAutoWinRoles",
         Callback = function(Value)
             Settings.AutoWinAsRoles = Value
@@ -1948,7 +1854,7 @@ if Window then
 
     CombatTab:CreateToggle({
         Name = "Auto Grab Gun",
-        CurrentValue = false,
+        CurrentValue = true,
         Flag = "UserAutoGrabGun",
         Callback = function(Value)
             Settings.AutoGrabGun = Value
@@ -2122,17 +2028,6 @@ if Window then
     })
 
     Rayfield:LoadConfiguration()
-    -- Гарантируем надежные настройки для авто-фарма
-    Settings.AutoFarm = true
-    Settings.AutoGrabGun = false
-    Settings.GunPriority = false
-    Settings.AutoWinAsRoles = false
-    if Settings.ActionOnFull == "Murderer" or not Settings.ActionOnFull then
-        Settings.ActionOnFull = "Lobby"
-    end
-    if not Settings.FarmMode or Settings.FarmMode == "" then
-        Settings.FarmMode = "Instant TP"
-    end
 end
 
 -- Старт
