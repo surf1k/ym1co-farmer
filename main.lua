@@ -369,15 +369,15 @@ local function setAutoFarm(state)
 end
 
 local function getCoinContainer()
-    local cc = Workspace:FindFirstChild("CoinContainer", true)
-    if cc and #cc:GetChildren() > 0 then
-        return cc
-    end
     for _, obj in ipairs(Workspace:GetChildren()) do
-        local c = obj:FindFirstChild("CoinContainer")
-        if c and #c:GetChildren() > 0 then
-            return c
+        local cc = obj:FindFirstChild("CoinContainer", true)
+        if cc and #cc:GetChildren() > 0 then
+            return cc
         end
+    end
+    local direct = Workspace:FindFirstChild("CoinContainer", true)
+    if direct and #direct:GetChildren() > 0 then
+        return direct
     end
     return nil
 end
@@ -392,20 +392,20 @@ local function getLobbyCFrame()
     if lobby then
         local spawns = lobby:FindFirstChild("Spawns") or lobby:FindFirstChild("SpawnLocations")
         if spawns then
-            local sp = spawns:FindFirstChildWhichIsA("BasePart", true)
-            if sp then return sp.CFrame end
+            local sp = spawns:FindFirstChildWhichIsA("SpawnLocation", true) or spawns:FindFirstChildWhichIsA("BasePart", true)
+            if sp then return sp.CFrame + Vector3.new(0, 3, 0) end
         end
-        local part = lobby:FindFirstChildWhichIsA("BasePart", true)
-        if part then return part.CFrame end
+        local part = lobby:FindFirstChildWhichIsA("SpawnLocation", true)
+        if part then return part.CFrame + Vector3.new(0, 3, 0) end
     end
     return CFrame.new(-108, 140, -11)
 end
 
 local function isInLobby(root)
     if not root then return false end
-    local lobbyCF = getLobbyCFrame()
-    local dist = (root.Position - lobbyCF.Position).Magnitude
-    return dist < 60
+    -- В MM2 лобби парит в воздухе на высоте Y > 100 (спавн ~ -108, 140, -11).
+    -- Все игровые карты MM2 расположены внизу (Y < 75).
+    return root.Position.Y > 100
 end
 
 -- Определение ролей
@@ -1125,8 +1125,15 @@ local function touchCoin(coinPart, root)
     if firetouchinterest then
         pcall(function()
             firetouchinterest(root, coinPart, 0)
-            task.wait(0.01)
             firetouchinterest(root, coinPart, 1)
+            if coinPart.Parent and coinPart.Parent:IsA("Model") then
+                for _, child in ipairs(coinPart.Parent:GetChildren()) do
+                    if child:IsA("BasePart") and child ~= coinPart then
+                        firetouchinterest(root, child, 0)
+                        firetouchinterest(root, child, 1)
+                    end
+                end
+            end
         end)
     end
 end
@@ -1149,95 +1156,20 @@ local function getKiteCFrame(root, murdererPos, desiredDist)
 end
 
 local ignoredCoins = {}
-local connectedContainers = {}
 
-local function trackContainer(container)
-    if not container or connectedContainers[container] then return end
-    connectedContainers[container] = true
-
-    pcall(function()
-        container.ChildRemoved:Connect(function(child)
-            local exp = tick() + 60.0
-            ignoredCoins[child] = exp
-            for _, d in ipairs(child:GetDescendants()) do
-                ignoredCoins[d] = exp
-            end
-        end)
-        container.DescendantRemoving:Connect(function(desc)
-            ignoredCoins[desc] = tick() + 60.0
-        end)
-    end)
-end
-
-local function isCoinCollectable(coinOrPart, myPos)
-    if not coinOrPart or not coinOrPart.Parent then return false end
-
-    local now = tick()
-    if ignoredCoins[coinOrPart] and now < ignoredCoins[coinOrPart] then return false end
-
-    local container = getCoinContainer()
-    if not container or not coinOrPart:IsDescendantOf(container) then return false end
-
-    local part = coinOrPart:IsA("BasePart") and coinOrPart or coinOrPart:FindFirstChildWhichIsA("BasePart", true)
-    if not part or not part.Parent or not part:IsDescendantOf(Workspace) then return false end
-    if ignoredCoins[part] and now < ignoredCoins[part] then return false end
-
-    -- 1. Проверка видимости: в MM2 подобранная монета сразу становится прозрачной (Transparency = 1)
-    if part.Transparency >= 0.75 then
-        ignoredCoins[coinOrPart] = now + 20.0
-        ignoredCoins[part] = now + 20.0
+local function isCoinValid(part)
+    if not part or not part.Parent or not part:IsDescendantOf(Workspace) then
         return false
     end
-
-    -- 2. Проверка CanTouch: при сборе хитбокс отключается сервером
-    if part.CanTouch == false then
-        ignoredCoins[coinOrPart] = now + 20.0
-        ignoredCoins[part] = now + 20.0
+    if part.Transparency >= 0.99 then
         return false
     end
-
-    -- 3. Проверка TouchInterest / TouchTransmitter (сервер удаляет TouchInterest при подборе)
-    local hasTouch = part:FindFirstChild("TouchInterest") or part:FindFirstChildWhichIsA("TouchTransmitter")
-    if not hasTouch and part.Parent then
-        hasTouch = part.Parent:FindFirstChild("TouchInterest", true) or part.Parent:FindFirstChildWhichIsA("TouchTransmitter", true)
-    end
-    if not hasTouch then
-        ignoredCoins[coinOrPart] = now + 20.0
-        ignoredCoins[part] = now + 20.0
-        return false
-    end
-
-    -- 4. Проверка атрибутов / меток сбора
-    if coinOrPart:GetAttribute("Collected") or part:GetAttribute("Collected") then
-        ignoredCoins[coinOrPart] = now + 20.0
-        ignoredCoins[part] = now + 20.0
-        return false
-    end
-
-    -- 5. Трекинг других игроков: если другой игрок уже стоит вплотную к монете (< 3.5 студов), монета уже залутана им!
-    local coinPos = part.Position
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer and p.Character then
-            local pRoot = p.Character:FindFirstChild("HumanoidRootPart")
-            if pRoot then
-                local pDist = (pRoot.Position - coinPos).Magnitude
-                if pDist < 3.5 then
-                    ignoredCoins[coinOrPart] = now + 5.0
-                    ignoredCoins[part] = now + 5.0
-                    return false
-                end
-            end
-        end
-    end
-
-    return true, part
+    return true
 end
 
 local function getNearestCoin(root)
     local container = getCoinContainer()
     if not container or not root then return nil end
-
-    trackContainer(container)
 
     local myPos = root.Position
     local nearest = nil
@@ -1249,12 +1181,20 @@ local function getNearestCoin(root)
     end
 
     for _, coin in ipairs(container:GetChildren()) do
-        local collectable, part = isCoinCollectable(coin, myPos)
-        if collectable and part then
-            local d = (part.Position - myPos).Magnitude
-            if d < minDist then
-                minDist = d
-                nearest = part
+        if not ignoredCoins[coin] then
+            local part = nil
+            if coin:IsA("BasePart") then
+                part = coin
+            elseif coin:IsA("Model") then
+                part = coin.PrimaryPart or coin:FindFirstChild("Coin_Visual") or coin:FindFirstChild("Coin") or coin:FindFirstChildWhichIsA("BasePart", true)
+            end
+
+            if part and not ignoredCoins[part] and isCoinValid(part) then
+                local d = (part.Position - myPos).Magnitude
+                if d < minDist then
+                    minDist = d
+                    nearest = part
+                end
             end
         end
     end
@@ -1553,6 +1493,24 @@ local function farmStep()
         return
     end
 
+    -- 1. Сначала проверяем контейнер монет: если раунд не идет или монеты не появились
+    local container = getCoinContainer()
+    if not container or #container:GetChildren() == 0 then
+        cachedUndergroundSpot = nil
+        emptyCoinsSince = nil
+        if hum.PlatformStand then
+            hum.PlatformStand = false
+            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end
+        if currentTween then
+            currentTween:Cancel()
+            currentTween = nil
+        end
+        task.wait(0.3)
+        return
+    end
+
+    -- 2. Если игрок в лобби (ждет очереди / spectator)
     if isInLobby(root) then
         cachedUndergroundSpot = nil
         emptyCoinsSince = nil
@@ -1564,13 +1522,14 @@ local function farmStep()
             currentTween:Cancel()
             currentTween = nil
         end
+        task.wait(0.3)
         return
     end
 
     local roles = getRoles()
     local currentCoins = getCoinBagCount()
 
-    -- 1. СТРОГИЙ ПРИОРИТЕТ: ТОЛЬКО ЕСЛИ МЕШОК ДЕЙСТВИТЕЛЬНО ПОЛОН (>= MaxBagCapacity, 40 МОНЕТ)
+    -- 3. СТРОГИЙ ПРИОРИТЕТ: ТОЛЬКО ЕСЛИ МЕШОК ДЕЙСТВИТЕЛЬНО ПОЛОН (>= MaxBagCapacity, 40 МОНЕТ)
     if currentCoins >= Settings.MaxBagCapacity then
         emptyCoinsSince = nil
         root.AssemblyLinearVelocity = Vector3.zero
@@ -1601,9 +1560,14 @@ local function farmStep()
         if Settings.ActionOnFull == "Underground" then
             toggleNoclip(true)
             local safeSpot = getUndergroundCFrame(root)
-            local tw = TweenService:Create(root, TweenInfo.new(0.35, Enum.EasingStyle.Linear), { CFrame = safeSpot })
-            tw:Play()
-            tw.Completed:Wait()
+            if Settings.FarmMode == "Instant TP" then
+                root.CFrame = safeSpot
+                root.AssemblyLinearVelocity = Vector3.zero
+            else
+                local tw = TweenService:Create(root, TweenInfo.new(0.35, Enum.EasingStyle.Linear), { CFrame = safeSpot })
+                tw:Play()
+                tw.Completed:Wait()
+            end
             task.wait(1.5)
         elseif Settings.ActionOnFull == "Server Hop" then
             hopToPopulatedServer()
@@ -1611,36 +1575,21 @@ local function farmStep()
         else
             -- По умолчанию "Lobby": безопасный уход в лобби
             local lobbySpot = getLobbyCFrame()
-            local tw = TweenService:Create(root, TweenInfo.new(0.5, Enum.EasingStyle.Linear), { CFrame = lobbySpot })
-            tw:Play()
-            tw.Completed:Wait()
+            if Settings.FarmMode == "Instant TP" then
+                root.CFrame = lobbySpot
+                root.AssemblyLinearVelocity = Vector3.zero
+            else
+                local tw = TweenService:Create(root, TweenInfo.new(0.5, Enum.EasingStyle.Linear), { CFrame = lobbySpot })
+                tw:Play()
+                tw.Completed:Wait()
+            end
             task.wait(1.5)
         end
         return
     end
 
-    -- 2. МЕШОК НЕ ПОЛОН: СТРОГО ФАРМИМ МОНЕТЫ И НИКОГДА НЕ ЛЕЗЕМ К МАНЬЯКУ!
-    local container = getCoinContainer()
-    if not container or #container:GetChildren() == 0 then
-        cachedUndergroundSpot = nil
-        if hum.PlatformStand then
-            hum.PlatformStand = false
-            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-        end
-        if currentTween then
-            currentTween:Cancel()
-            currentTween = nil
-        end
-        -- Монет сейчас нет на карте (ожидание респавна). Никаких атак на маньяка! Спокойно ждем монеты.
-        task.wait(0.4)
-        return
-    end
-
+    -- 4. МЕШОК НЕ ПОЛОН: СТРОГО ФАРМИМ МОНЕТЫ И НИКОГДА НЕ ЛЕЗЕМ К МАНЬЯКУ!
     emptyCoinsSince = nil
-
-    if not hum.PlatformStand then
-        hum.PlatformStand = true
-    end
 
     if Settings.AutoGrabGun then
         local gun = getGunDrop()
@@ -1648,101 +1597,113 @@ local function farmStep()
             local gp = gun:IsA("BasePart") and gun or gun:FindFirstChildWhichIsA("BasePart", true)
             if gp then
                 local dist = (gp.Position - root.Position).Magnitude
-                local tTime = math.clamp(dist / Settings.FarmSpeed, 0.05, 1.5)
-                local tw = TweenService:Create(root, TweenInfo.new(tTime, Enum.EasingStyle.Linear),
-                    { CFrame = gp.CFrame + Vector3.new(0, 1.5, 0) })
-                tw:Play()
-                tw.Completed:Wait()
-                touchCoin(gp, root)
-                task.wait(0.1)
+                if Settings.FarmMode == "Instant TP" then
+                    root.CFrame = gp.CFrame + Vector3.new(0, 1.5, 0)
+                    root.AssemblyLinearVelocity = Vector3.zero
+                    touchCoin(gp, root)
+                    task.wait(0.05)
+                else
+                    local tTime = math.clamp(dist / Settings.FarmSpeed, 0.05, 1.5)
+                    local tw = TweenService:Create(root, TweenInfo.new(tTime, Enum.EasingStyle.Linear),
+                        { CFrame = gp.CFrame + Vector3.new(0, 1.5, 0) })
+                    tw:Play()
+                    tw.Completed:Wait()
+                    touchCoin(gp, root)
+                    task.wait(0.1)
+                end
                 if Settings.GunPriority then return end
             end
         end
     end
 
     local targetPart = getNearestCoin(root)
-    if targetPart and targetPart:IsDescendantOf(Workspace) then
-        toggleNoclip(true)
+    if not targetPart or not targetPart:IsDescendantOf(Workspace) then
+        if hum.PlatformStand then
+            hum.PlatformStand = false
+            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end
+        task.wait(0.1)
+        return
+    end
 
-        local targetPos = targetPart.Position
-        local dist = (targetPos - root.Position).Magnitude
+    toggleNoclip(true)
 
-        if Settings.FarmMode == "Instant TP" then
-            root.CFrame = targetPart.CFrame
-            root.AssemblyLinearVelocity = Vector3.zero
-            touchCoin(targetPart, root)
-        else
-            local tTime = math.clamp(dist / Settings.FarmSpeed, 0.03, 0.85)
-            local tweenInfo = TweenInfo.new(tTime, Enum.EasingStyle.Linear)
-            currentTween = TweenService:Create(root, tweenInfo, { CFrame = targetPart.CFrame })
-            currentTween:Play()
+    local targetPos = targetPart.Position
+    local dist = (targetPos - root.Position).Magnitude
 
-            local startTween = tick()
-            while currentTween and currentTween.PlaybackState == Enum.PlaybackState.Playing and (tick() - startTween) < (tTime + 0.05) do
-                -- ТРЕКИНГ В ПОЛЕТЕ: если во время нашего подлета монету уже залутал другой игрок или она исчезла
-                if not isCoinCollectable(targetPart, root.Position) then
-                    currentTween:Cancel()
-                    currentTween = nil
-                    break
-                end
-
-                if (root.Position - targetPart.Position).Magnitude <= 3.2 then
-                    break
-                end
-                task.wait(0.01)
-            end
-
-            if currentTween then
-                currentTween:Cancel(); currentTween = nil
-            end
+    if Settings.FarmMode == "Instant TP" then
+        root.CFrame = targetPart.CFrame
+        root.AssemblyLinearVelocity = Vector3.zero
+        touchCoin(targetPart, root)
+    else
+        if not hum.PlatformStand then
+            hum.PlatformStand = true
         end
 
-        local startGrab = tick()
-        local initialCoins = currentCoins
+        local tTime = math.clamp(dist / Settings.FarmSpeed, 0.03, 0.85)
+        local tweenInfo = TweenInfo.new(tTime, Enum.EasingStyle.Linear)
+        currentTween = TweenService:Create(root, tweenInfo, { CFrame = targetPart.CFrame })
+        currentTween:Play()
 
-        while targetPart and targetPart:IsDescendantOf(Workspace) and targetPart:IsDescendantOf(container) do
-            -- 1. Трекинг нашего мешка: если монета зачислена в мешок - мгновенно летим к следующей!
-            if getCoinBagCount() > initialCoins then
-                ignoredCoins[targetPart] = tick() + 30.0
-                if targetPart.Parent and targetPart.Parent ~= container then
-                    ignoredCoins[targetPart.Parent] = tick() + 30.0
-                end
+        local startTween = tick()
+        while currentTween and currentTween.PlaybackState == Enum.PlaybackState.Playing and (tick() - startTween) < (tTime + 0.05) do
+            if not isCoinValid(targetPart) then
+                currentTween:Cancel()
+                currentTween = nil
                 break
             end
 
-            -- 2. Трекинг статуса монеты: если ее уже подобрали (прозрачность = 1, пропал TouchInterest или забрал другой игрок)
-            if not isCoinCollectable(targetPart, root.Position) then
-                ignoredCoins[targetPart] = tick() + 20.0
-                if targetPart.Parent and targetPart.Parent ~= container then
-                    ignoredCoins[targetPart.Parent] = tick() + 20.0
-                end
+            if (root.Position - targetPart.Position).Magnitude <= 3.2 then
                 break
             end
-
-            if (tick() - startGrab) > 0.1 then
-                ignoredCoins[targetPart] = tick() + 5.0
-                break
-            end
-
-            root.CFrame = targetPart.CFrame
-            root.AssemblyLinearVelocity = Vector3.zero
-            touchCoin(targetPart, root)
-
             task.wait(0.01)
+        end
 
-            if not targetPart.Parent or not targetPart:IsDescendantOf(container) then
-                break
+        if currentTween then
+            currentTween:Cancel(); currentTween = nil
+        end
+    end
+
+    local startGrab = tick()
+    local initialCoins = currentCoins
+
+    while targetPart and targetPart:IsDescendantOf(Workspace) and isCoinValid(targetPart) do
+        -- 1. Трекинг нашего мешка: если монета зачислена в мешок - мгновенно летим к следующей!
+        if getCoinBagCount() > initialCoins then
+            ignoredCoins[targetPart] = tick() + 3.0
+            if targetPart.Parent and targetPart.Parent ~= container then
+                ignoredCoins[targetPart.Parent] = tick() + 3.0
             end
+            break
         end
 
-        ignoredCoins[targetPart] = tick() + 10.0
-        if targetPart.Parent and targetPart.Parent ~= container then
-            ignoredCoins[targetPart.Parent] = tick() + 10.0
+        -- 2. Если прошло больше 0.25 секунд, а монета не подобралась (не задерживаемся на ней)
+        if (tick() - startGrab) > 0.25 then
+            ignoredCoins[targetPart] = tick() + 2.5
+            if targetPart.Parent and targetPart.Parent ~= container then
+                ignoredCoins[targetPart.Parent] = tick() + 2.5
+            end
+            break
         end
 
-        if Settings.CoinDelay > 0 then
-            task.wait(Settings.CoinDelay)
+        root.CFrame = targetPart.CFrame
+        root.AssemblyLinearVelocity = Vector3.zero
+        touchCoin(targetPart, root)
+
+        task.wait(0.02)
+
+        if not targetPart.Parent or not targetPart:IsDescendantOf(container) then
+            break
         end
+    end
+
+    ignoredCoins[targetPart] = tick() + 2.0
+    if targetPart.Parent and targetPart.Parent ~= container then
+        ignoredCoins[targetPart.Parent] = tick() + 2.0
+    end
+
+    if Settings.CoinDelay > 0 then
+        task.wait(Settings.CoinDelay)
     end
 end
 
@@ -2161,12 +2122,16 @@ if Window then
     })
 
     Rayfield:LoadConfiguration()
-    -- Гарантируем, что устаревший сохраненный конфиг не включит суицидальные атаки
+    -- Гарантируем надежные настройки для авто-фарма
+    Settings.AutoFarm = true
     Settings.AutoGrabGun = false
     Settings.GunPriority = false
     Settings.AutoWinAsRoles = false
     if Settings.ActionOnFull == "Murderer" or not Settings.ActionOnFull then
         Settings.ActionOnFull = "Lobby"
+    end
+    if not Settings.FarmMode or Settings.FarmMode == "" then
+        Settings.FarmMode = "Instant TP"
     end
 end
 
