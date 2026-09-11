@@ -29,49 +29,74 @@ local StarterGui = game:GetService("StarterGui")
 
 local LocalPlayer = Players.LocalPlayer
 
--- ==================== МГНОВЕННЫЙ АВТО-РЕКОННЕКТ (РАБОТАЕТ ДО ЗАГРУЗКИ КАРТЫ) ====================
-local function initAutoReconnect()
-    local rejoining = false
-    local function triggerReconnect(reason)
-        if rejoining then return end
-        rejoining = true
-        warn("[Auto-Reconnect] " .. tostring(reason) .. ". Reconnecting...")
-        task.wait(1.0)
+local isGameExiting = false
 
-        -- 1. Нажатие кнопок Cancel или Retry на ErrorPrompt (Error 529 / 279)
+-- ==================== ДЕТЕКТ КИКА / ДИСКОННЕКТА -> ВЫХОД И ПЕРЕЗАПУСК ДЛЯ SOLARA ====================
+local function initDisconnectHandler()
+    local function triggerExit(reason)
+        if isGameExiting then return end
+        isGameExiting = true
+        warn("[DisconnectHandler] Kick/disconnect detected: " .. tostring(reason) .. ". Exiting for clean Solara launch...")
+
+        -- Записываем статус KICKED_OR_DISCONNECTED в файл статистики
+        pcall(function()
+            if writefile then
+                local kickData = {
+                    username = LocalPlayer.Name,
+                    userId = LocalPlayer.UserId,
+                    status = "KICKED_OR_DISCONNECTED",
+                    level = lastKnownLevel or 0,
+                    error = tostring(reason),
+                    updatedAt = os.time(),
+                    timestamp = os.date("%Y-%m-%d %H:%M:%S")
+                }
+                writefile("stats_" .. tostring(LocalPlayer.UserId) .. ".json", HttpService:JSONEncode(kickData))
+            end
+        end)
+
+        task.wait(0.2)
+
+        -- Закрываем клиент Roblox, чтобы farm_manager перезапустил чистый процесс под Solara
+        pcall(function()
+            game:Shutdown()
+        end)
+
+        -- Если процесс не закрылся сразу, пробуем кликнуть кнопку закрытия/выхода
+        task.wait(1.0)
         pcall(function()
             local promptGui = CoreGui:FindFirstChild("RobloxPromptGui")
             local overlay = promptGui and promptGui:FindFirstChild("promptOverlay")
             local prompt = overlay and overlay:FindFirstChild("ErrorPrompt")
             if prompt then
-                -- На Error 529 кнопка Cancel закрывает зависший попап в десктопное меню
                 local btn = prompt:FindFirstChild("ButtonDefault", true) or prompt:FindFirstChild("ButtonPrimary", true) or prompt:FindFirstChild("ConfirmButton", true)
                 if btn then
                     if firesignal and btn:FindFirstChild("Activated") then
                         firesignal(btn.Activated)
-                        task.wait(1)
                     elseif getconnections then
                         for _, conn in ipairs(getconnections(btn.MouseButton1Click or btn.Activated)) do
                             conn:Fire()
                         end
-                        task.wait(1)
                     end
                 end
             end
         end)
 
-        task.wait(2.0)
-        -- 2. Запасной прямой реконнект через TeleportService
+        task.wait(0.5)
         pcall(function()
-            TeleportService:Teleport(game.PlaceId, LocalPlayer)
+            game:Shutdown()
         end)
-        task.wait(5.0)
-        rejoining = false
     end
 
     pcall(function()
-        GuiService.ErrorMessageChanged:Connect(function()
-            triggerReconnect("ErrorMessageChanged")
+        GuiService.ErrorMessageChanged:Connect(function(msg)
+            if msg and msg ~= "" then
+                triggerExit("ErrorMessageChanged: " .. tostring(msg))
+            else
+                local errCode = GuiService:GetErrorCode()
+                if errCode and errCode ~= Enum.ConnectionError.OK then
+                    triggerExit("ErrorCode: " .. tostring(errCode))
+                end
+            end
         end)
     end)
 
@@ -82,18 +107,26 @@ local function initAutoReconnect()
             if overlay then
                 overlay.ChildAdded:Connect(function(child)
                     if child.Name == "ErrorPrompt" then
-                        triggerReconnect("ErrorPrompt appeared")
+                        task.wait(0.2)
+                        local msg = "ErrorPrompt appeared"
+                        pcall(function()
+                            local errLabel = child:FindFirstChild("ErrorMessage", true)
+                            if errLabel and errLabel:IsA("TextLabel") and errLabel.Text ~= "" then
+                                msg = errLabel.Text
+                            end
+                        end)
+                        triggerExit(msg)
                     end
                 end)
                 if overlay:FindFirstChild("ErrorPrompt") then
-                    triggerReconnect("ErrorPrompt already active")
+                    triggerExit("ErrorPrompt already active")
                 end
             end
         end)
     end)
 end
 
-task.spawn(initAutoReconnect)
+task.spawn(initDisconnectHandler)
 
 -- Авто-сохранение скрипта при любых телепортациях / сменах серверов
 pcall(function()
@@ -271,7 +304,7 @@ end
 -- ==================== НАСТРОЙКИ ПО УМОЛЧАНИЮ ====================
 local Settings = {
     AutoFarm = true,
-    FarmSpeed = 50,
+    FarmSpeed = 22,
     FarmMode = "Tween",
     CoinDelay = 0.01,
     MaxBagCapacity = 40,
@@ -566,6 +599,7 @@ local function getAccountStats()
     local stats = {
         username = LocalPlayer.Name,
         userId = LocalPlayer.UserId,
+        status = "FARMING",
         level = lastKnownLevel,
         bag = currentBag,
         maxBag = Settings.MaxBagCapacity,
@@ -604,7 +638,7 @@ local function getAccountStats()
 end
 
 local function exportStatsToFile()
-    if not writefile then return end
+    if not writefile or isGameExiting then return end
     local stats = getAccountStats()
 
     pcall(function()
@@ -1670,7 +1704,7 @@ end)
 
 local function applySafeFarmPreset()
     Settings.FarmMode = "Tween"
-    Settings.FarmSpeed = 50
+    Settings.FarmSpeed = 22
     Settings.CoinDelay = 0.01
     Settings.MaxBagCapacity = 40
     Settings.ActionOnFull = "CombatWin"
@@ -1703,7 +1737,7 @@ if Window then
         Name = "Safe Farm & Auto-Lobby Exit",
         Callback = function()
             applySafeFarmPreset()
-            notifyUser("ym1co Preset", "Activated Safe Farm (~1s/coin) + Extra RAM", 3)
+            notifyUser("ym1co Preset", "Activated Safe Farm (22 studs/s) + Extra RAM", 3)
         end,
     })
 
@@ -1725,14 +1759,14 @@ if Window then
         Name = "AFK Night Farm",
         Callback = function()
             Settings.FarmMode = "Tween"
-            Settings.FarmSpeed = 50
+            Settings.FarmSpeed = 22
             Settings.CoinDelay = 0.01
             Settings.MaxBagCapacity = 40
             Settings.ActionOnFull = "Server Hop"
             Settings.AvoidMurderer = true
             Settings.AntiAFK = true
             setAutoFarm(true)
-            notifyUser("ym1co Preset", "Activated AFK Night Farm (~1s/coin)", 3)
+            notifyUser("ym1co Preset", "Activated AFK Night Farm (22 studs/s)", 3)
         end,
     })
 
@@ -1751,11 +1785,11 @@ if Window then
     FarmTab:CreateSection("Speed and Movement")
 
     FarmTab:CreateSlider({
-        Name = "Farm Speed (~1s/coin: 50)",
-        Range = { 20, 80 },
-        Increment = 2,
+        Name = "Farm Speed (Safe: 20-25)",
+        Range = { 10, 60 },
+        Increment = 1,
         Suffix = " studs/s",
-        CurrentValue = 50,
+        CurrentValue = 22,
         Flag = "UserFarmSpeed",
         Callback = function(Value)
             Settings.FarmSpeed = Value
