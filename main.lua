@@ -703,12 +703,23 @@ end)
 -- ==================== ЗАЩИЩЕННЫЙ СЕРВЕРХОП И АНТИ-СТОЛКНОВЕНИЕ ====================
 local skippedServers = {}
 
+local lastLocalHopTime = 0
+
 local function canTeleport()
+    -- 1. Локальный кулдаун окна: не чаще раза в 120 секунд (защита от частых рестартов и банов)
+    if (tick() - lastLocalHopTime) < 120 then
+        return false
+    end
+    -- 2. Защита от хопа в первые 90 секунд после входа в игру (дай серверу загрузиться)
+    if (tick() - scriptLoadTime) < 90 then
+        return false
+    end
+    -- 3. Межпроцессный лок: минимум 15 секунд разницы между хопами разных ботов
     local lockFile = "teleport_lock.json"
     if isfile and isfile(lockFile) then
         local ok, data = pcall(function() return HttpService:JSONDecode(readfile(lockFile)) end)
         if ok and type(data) == "table" and data.timestamp then
-            if (tick() - data.timestamp) < 5 then
+            if (tick() - data.timestamp) < 15 then
                 return false
             end
         end
@@ -761,7 +772,14 @@ local function unregisterMyServer()
 end
 
 local function hopToPopulatedServer(force)
-    if not force and not canTeleport() then return end
+    -- Жесткий лимит: даже при force запрещено хопать чаще чем раз в 60с (спасает от Arkose/Passport)
+    if (tick() - lastLocalHopTime) < 60 then
+        return
+    end
+    if not force and not canTeleport() then
+        return
+    end
+    lastLocalHopTime = tick()
     setTeleportLock()
 
     notifyUser("Server Hunter", "Ищем свободный сервер...", 3)
@@ -1043,14 +1061,17 @@ pcall(function()
     end)
 end)
 
+local lowPlayerCountSince = 0
+
 local function checkBotCollision()
     if not Settings.AutoServerHopOnBotCollision then return end
-    if (tick() - scriptLoadTime) < 3 then return end
+    -- Не хопаем в первые 60 секунд после входа в игру
+    if (tick() - scriptLoadTime) < 60 then return end
 
     for _, p in ipairs(Players:GetPlayers()) do
         if isOtherBot(p) then
             local lastHandled = handledCollisionBots[p.UserId] or 0
-            if (tick() - lastHandled) < 30 then
+            if (tick() - lastHandled) < 60 then
                 return
             end
             handledCollisionBots[p.UserId] = tick()
@@ -1070,7 +1091,7 @@ local function checkBotCollision()
                 StarterGui:SetCore("PromptBlockPlayer", p)
             end)
 
-            -- Цикл агрессивного авто-подтверждения кнопки "Block"
+            -- Цикл авто-подтверждения кнопки "Block"
             task.spawn(function()
                 local confirmed = false
                 for _ = 1, 25 do
@@ -1082,19 +1103,23 @@ local function checkBotCollision()
                         break
                     end
                 end
-                -- Если диалог завис после попыток, закрываем через Cancel, чтобы не закрывать обзор
                 if not confirmed then
                     dismissBlockPromptIfStuck()
                 end
             end)
 
+            -- Переход только если бот пробыл на сервере хотя бы 90с (защита от Passport/Arkose)
             if LocalPlayer.UserId > p.UserId then
-                notifyUser("Anti-Collision", "Обнаружен бот " .. p.Name .. "! Ухожу на другой сервер...", 3)
-                task.wait(math.random(1, 2))
-                hopToPopulatedServer(true)
-                return
+                if (tick() - scriptLoadTime) >= 90 and (tick() - lastLocalHopTime) >= 90 then
+                    notifyUser("Anti-Collision", "Обнаружен бот " .. p.Name .. "! Плавный уход через 10-15с...", 3)
+                    task.wait(math.random(10, 15))
+                    hopToPopulatedServer(false)
+                    return
+                else
+                    notifyUser("Anti-Collision", "Бот " .. p.Name .. " рядом, но мы недавно зашли. Доигрываем раунд.", 3)
+                end
             else
-                notifyUser("Anti-Collision", "Бот " .. p.Name .. " обнаружен. Я остаюсь, он уйдёт.", 3)
+                notifyUser("Anti-Collision", "Бот " .. p.Name .. " обнаружен. Я остаюсь.", 3)
             end
         end
     end
@@ -1102,21 +1127,29 @@ end
 
 Players.PlayerAdded:Connect(function(p)
     if isOtherBot(p) then
-        task.wait(1)
+        task.wait(2)
         checkBotCollision()
     end
 end)
 
 local function checkServerPopulation()
     if not Settings.AutoHopLowPlayerCount then return end
-    if (tick() - scriptLoadTime) < 20 then return end
+    -- Не трогаем сервер первые 120 секунд после захода
+    if (tick() - scriptLoadTime) < 120 then return end
 
     local count = #Players:GetPlayers()
     local minPlayers = Settings.MinPlayersInServer or 4
     if count < minPlayers then
-        notifyUser("Server Monitor", "Низкий онлайн (" .. count .. " игр.). Переход на полный сервер...", 3)
-        task.wait(2)
-        hopToPopulatedServer(true)
+        if lowPlayerCountSince == 0 then
+            lowPlayerCountSince = tick()
+        elseif (tick() - lowPlayerCountSince) >= 45 then
+            -- Сервер реально пустой более 45 секунд подряд
+            notifyUser("Server Monitor", "Низкий онлайн (" .. count .. " игр. >45с). Переход...", 3)
+            lowPlayerCountSince = 0
+            hopToPopulatedServer(false)
+        end
+    else
+        lowPlayerCountSince = 0
     end
 end
 
@@ -1762,7 +1795,7 @@ if Window then
             Settings.FarmSpeed = 22
             Settings.CoinDelay = 0.01
             Settings.MaxBagCapacity = 40
-            Settings.ActionOnFull = "Server Hop"
+            Settings.ActionOnFull = "Underground"
             Settings.AvoidMurderer = true
             Settings.AntiAFK = true
             setAutoFarm(true)
