@@ -24,6 +24,7 @@ ACTIVE_POOL_FILE = "active_pool.json"
 DONE_FILE = "done.txt"
 BOT_IDS_FILE = "bot_ids.json"
 ERRORS_FILE = "errors.json"
+IGNORED_ACCOUNTS_FILE = "ignored_accounts.json"
 
 file_lock = threading.Lock()
 farm_enabled = threading.Event()
@@ -102,6 +103,81 @@ def clear_error(username):
         save_json(ERRORS_FILE, errors)
     except Exception:
         pass
+
+
+def delete_account_completely(username: str):
+    """Полностью и навсегда удаляет аккаунт из фермы:
+    1. Добавляет имя в ignored_accounts.json (чтобы он больше НИКОГДА не импортировался из RAM / AccountData.json).
+    2. Удаляет из errors.json.
+    3. Вырезает строку из accounts_pool.txt.
+    4. Вырезает строку из accounts.txt.
+    5. Завершает процесс игры (если бот запущен) и удаляет из active_pool.json.
+    """
+    if not username:
+        return
+    u_lower = username.strip().lower()
+    print(f"[ACCOUNT_DELETE] Навсегда удаляем аккаунт {username} из фермы...")
+
+    # 1. Заносим в ignored_accounts.json
+    try:
+        ignored = load_json(IGNORED_ACCOUNTS_FILE, [])
+        if u_lower not in [str(x).lower() for x in ignored]:
+            ignored.append(username)
+            save_json(IGNORED_ACCOUNTS_FILE, ignored)
+    except Exception as e:
+        print(f"[ACCOUNT_DELETE] Ошибка записи в {IGNORED_ACCOUNTS_FILE}: {e}")
+
+    # 2. Удаляем из errors.json
+    clear_error(username)
+
+    # 3. Вырезаем из accounts_pool.txt
+    if os.path.exists(POOL_ACCOUNTS_FILE):
+        try:
+            with file_lock:
+                with open(POOL_ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+                    lines = [l for l in f if l.strip()]
+                new_lines = []
+                for l in lines:
+                    p = parse_account_line(l)
+                    if p and p.get("username", "").strip().lower() == u_lower:
+                        continue
+                    new_lines.append(l)
+                with open(POOL_ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+                    for l in new_lines:
+                        f.write(l.strip() + "\n")
+        except Exception as e:
+            print(f"[ACCOUNT_DELETE] Ошибка очистки {POOL_ACCOUNTS_FILE}: {e}")
+
+    # 4. Вырезаем из accounts.txt
+    if os.path.exists(ACCOUNTS_FILE):
+        try:
+            with file_lock:
+                with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+                    lines = [l for l in f if l.strip()]
+                new_lines = []
+                for l in lines:
+                    p = parse_account_line(l)
+                    if p and p.get("username", "").strip().lower() == u_lower:
+                        continue
+                    new_lines.append(l)
+                with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+                    for l in new_lines:
+                        f.write(l.strip() + "\n")
+        except Exception as e:
+            print(f"[ACCOUNT_DELETE] Ошибка очистки {ACCOUNTS_FILE}: {e}")
+
+    # 5. Завершаем активный процесс если есть
+    try:
+        active_pool = load_json(ACTIVE_POOL_FILE, [])
+        for b in active_pool:
+            if b.get("username", "").strip().lower() == u_lower:
+                pid = b.get("pid")
+                if pid:
+                    kill_pid(pid)
+        active_pool = [b for b in active_pool if b.get("username", "").strip().lower() != u_lower]
+        save_json(ACTIVE_POOL_FILE, active_pool)
+    except Exception as e:
+        print(f"[ACCOUNT_DELETE] Ошибка очистки {ACTIVE_POOL_FILE}: {e}")
 
 
 def get_farm_snapshot():
@@ -819,6 +895,13 @@ def sync_accounts_into_pool():
         if e.get("username")
     }
 
+    ignored_list = load_json(IGNORED_ACCOUNTS_FILE, [])
+    ignored_users = {
+        str(x).strip().lower()
+        for x in ignored_list
+        if str(x).strip()
+    }
+
     pool_lines = []
     if os.path.exists(POOL_ACCOUNTS_FILE):
         try:
@@ -868,6 +951,7 @@ def sync_accounts_into_pool():
                         and u_lower not in active_users
                         and u_lower not in pool_users
                         and u_lower not in error_users
+                        and u_lower not in ignored_users
                     ):
                         new_lines_to_add.append(f"{u}:{p}:{c}:{uid}")
                         pool_users.add(u_lower)
@@ -894,6 +978,7 @@ def sync_accounts_into_pool():
                             and u_lower not in active_users
                             and u_lower not in pool_users
                             and u_lower not in error_users
+                            and u_lower not in ignored_users
                         ):
                             new_lines_to_add.append(f"{u}:{p}:{c}:{uid}")
                             pool_users.add(u_lower)

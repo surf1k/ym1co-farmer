@@ -370,8 +370,8 @@ class FarmManagerGUI:
             self.root.after(1000, self.refresh_ui)
 
     def dismiss_error(self, uname: str):
-        """Удаляет ошибку конкретного аккаунта по клику на крестик."""
-        farm_manager.clear_error(uname)
+        """Полностью и навсегда удаляет проблемный аккаунт из пула фермы по клику на крестик."""
+        farm_manager.delete_account_completely(uname)
         if uname in self.error_card_widgets:
             self.error_card_widgets[uname]["frame"].destroy()
             del self.error_card_widgets[uname]
@@ -379,7 +379,7 @@ class FarmManagerGUI:
             self.error_frame.pack_forget()
         else:
             self.error_header_label.config(text=f"⚠️ ОШИБКА ПОДКЛЮЧЕНИЯ / ТРЕБУЕТСЯ ВНИМАНИЕ ({len(self.error_card_widgets)} АКК.)")
-        self.status_lbl.configure(text=f"✓ Ошибка аккаунта {uname} скрыта")
+        self.status_lbl.configure(text=f"✓ Аккаунт {uname} навсегда удален из пула фермы и исключен из RAM")
 
     def render_errors(self, errors):
         """Плавный рендер ошибок без удаления и пересоздания всех виджетов."""

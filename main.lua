@@ -264,7 +264,10 @@ local GreenTheme = {
     ToggleBackground = Color3.fromRGB(18, 30, 22),
     ToggleEnabled = Color3.fromRGB(120, 196, 93),
     ToggleDisabled = Color3.fromRGB(45, 60, 50),
-    ToggleCircle = Color3.fromRGB(222, 192, 126),
+    ToggleEnabledStroke = Color3.fromRGB(120, 196, 93),
+    ToggleDisabledStroke = Color3.fromRGB(65, 85, 70),
+    ToggleEnabledOuterStroke = Color3.fromRGB(80, 140, 65),
+    ToggleDisabledOuterStroke = Color3.fromRGB(40, 55, 45),
     DropdownSelected = Color3.fromRGB(28, 52, 34),
     DropdownUnselected = Color3.fromRGB(16, 26, 19),
     InputBackground = Color3.fromRGB(14, 24, 17),
@@ -274,19 +277,24 @@ local GreenTheme = {
 
 local Window = nil
 if Rayfield then
-    if Rayfield.Themes then
-        Rayfield.Themes["Green"] = GreenTheme
-        Rayfield.Themes["Default"] = GreenTheme
-    end
+    pcall(function()
+        if Rayfield.Theme then
+            Rayfield.Theme["Green"] = GreenTheme
+            Rayfield.Theme["Default"] = GreenTheme
+        end
+        if Rayfield.Themes then
+            Rayfield.Themes["Green"] = GreenTheme
+            Rayfield.Themes["Default"] = GreenTheme
+        end
+    end)
     Window = Rayfield:CreateWindow({
         Name = "ym1co farmer 5.0",
         Icon = 0,
         LoadingTitle = "ym1co farmer 5.0",
         LoadingSubtitle = "Steampunk Emerald Edition",
-        Theme = GreenTheme,
-        CustomTheme = GreenTheme,
+        Theme = "Green",
         DisableRayfieldPrompts = false,
-        DisableBuildWarnings = false,
+        DisableBuildWarnings = true,
         ConfigurationSaving = {
             Enabled = true,
             FolderName = "ym1co_farmer_v5",
@@ -295,7 +303,7 @@ if Rayfield then
         KeySystem = false
     })
     if Rayfield.ChangeTheme then
-        pcall(function() Rayfield:ChangeTheme(GreenTheme) end)
+        pcall(function() Rayfield:ChangeTheme("Green") end)
     end
 end
 
@@ -1807,7 +1815,8 @@ end
 
 -- ==================== ВКЛАДКИ RAYFIELD ====================
 if Window then
-    local PresetsTab = Window:CreateTab("Presets", 0)
+    local ok_ui, err_ui = pcall(function()
+        local PresetsTab = Window:CreateTab("Presets", 0)
     local FarmTab = Window:CreateTab("Farm Settings", 0)
     local StatsTab = Window:CreateTab("Account Stats & Logs", 0)
     local CombatTab = Window:CreateTab("Combat", 0)
@@ -2203,6 +2212,10 @@ if Window then
     Rayfield:LoadConfiguration()
     -- Автоматическое применение пресета Safe Farm + Extra RAM
     applySafeFarmPreset()
+    end)
+    if not ok_ui then
+        warn("[ym1co UI] Rayfield UI build warning:", tostring(err_ui))
+    end
 end
 
 -- Старт
