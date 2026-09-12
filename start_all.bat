@@ -16,9 +16,19 @@ if %errorlevel% equ 0 (
     echo.
 )
 
-:: 1. Проверка наличия Python
-python --version >nul 2>&1
-if %errorlevel% neq 0 (
+:: 1. Проверка наличия Python / py
+set "PY_CMD="
+py --version >nul 2>&1
+if %errorlevel% equ 0 (
+    set "PY_CMD=py"
+) else (
+    python --version >nul 2>&1
+    if %errorlevel% equ 0 (
+        set "PY_CMD=python"
+    )
+)
+
+if "%PY_CMD%"=="" (
     color 0C
     echo [ОШИБКА] Python не найден на вашем компьютере!
     echo Пожалуйста, установите Python с официального сайта: https://www.python.org/
@@ -28,14 +38,13 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
-echo [+] Python обнаружен:
-python --version
+echo [+] Python обнаружен (%PY_CMD%):
+%PY_CMD% --version
 echo.
 
 :: 2. Скачивание и установка необходимых библиотек
 echo [*] Проверка и установка библиотек Python (requests, beautifulsoup4, psutil)...
-python -m pip install --upgrade pip >nul 2>&1
-python -m pip install requests beautifulsoup4 psutil
+%PY_CMD% -m pip install requests beautifulsoup4 psutil
 if %errorlevel% neq 0 (
     color 0C
     echo.
@@ -104,8 +113,11 @@ echo 2. Убедитесь, что запущена утилита разбло�
 echo ---------------------------------------------------------
 echo.
 
-echo [*] Запуск фермы...
-python farm_manager.py
+echo [*] Запуск Farm Manager GUI...
+%PY_CMD% farm_manager_gui.py
+if %errorlevel% neq 0 (
+    %PY_CMD% farm_manager.py
+)
 
 if %errorlevel% neq 0 (
     echo.
