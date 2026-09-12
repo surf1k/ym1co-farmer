@@ -812,6 +812,13 @@ def sync_accounts_into_pool():
         if b.get("username")
     }
 
+    errors_list = load_json(ERRORS_FILE, [])
+    error_users = {
+        e.get("username", "").strip().lower()
+        for e in errors_list
+        if e.get("username")
+    }
+
     pool_lines = []
     if os.path.exists(POOL_ACCOUNTS_FILE):
         try:
@@ -860,6 +867,7 @@ def sync_accounts_into_pool():
                         u_lower not in done_users
                         and u_lower not in active_users
                         and u_lower not in pool_users
+                        and u_lower not in error_users
                     ):
                         new_lines_to_add.append(f"{u}:{p}:{c}:{uid}")
                         pool_users.add(u_lower)
@@ -885,6 +893,7 @@ def sync_accounts_into_pool():
                             u_lower not in done_users
                             and u_lower not in active_users
                             and u_lower not in pool_users
+                            and u_lower not in error_users
                         ):
                             new_lines_to_add.append(f"{u}:{p}:{c}:{uid}")
                             pool_users.add(u_lower)
