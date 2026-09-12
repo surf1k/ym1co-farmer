@@ -30,6 +30,9 @@ local StarterGui = game:GetService("StarterGui")
 local LocalPlayer = Players.LocalPlayer
 
 local isGameExiting = false
+local lastKnownLevel = 0
+local lastKnownCoins = 0
+local sessionCoinsFarmed = 0
 
 -- ==================== ДЕТЕКТ КИКА / ДИСКОННЕКТА -> ВЫХОД И ПЕРЕЗАПУСК ДЛЯ SOLARA ====================
 local function initDisconnectHandler()
@@ -46,6 +49,7 @@ local function initDisconnectHandler()
                     userId = LocalPlayer.UserId,
                     status = "KICKED_OR_DISCONNECTED",
                     level = lastKnownLevel or 0,
+                    coins = lastKnownCoins or sessionCoinsFarmed or 0,
                     error = tostring(reason),
                     updatedAt = os.time(),
                     timestamp = os.date("%Y-%m-%d %H:%M:%S")
@@ -238,44 +242,48 @@ end
 
 -- ==================== НЕОНОВО-ЗЕЛЁНАЯ ТЕМА RAYFIELD ====================
 local GreenTheme = {
-    TextColor = Color3.fromRGB(230, 255, 230),
-    Background = Color3.fromRGB(12, 22, 16),
-    Topbar = Color3.fromRGB(18, 38, 24),
-    Shadow = Color3.fromRGB(5, 12, 8),
-    NotificationBackground = Color3.fromRGB(15, 32, 20),
-    NotificationActionsBackground = Color3.fromRGB(22, 48, 30),
-    TabBackground = Color3.fromRGB(16, 34, 22),
-    TabStroke = Color3.fromRGB(0, 180, 90),
-    TabBackgroundSelected = Color3.fromRGB(25, 65, 38),
-    TabTextColor = Color3.fromRGB(180, 255, 190),
-    SelectedTabTextColor = Color3.fromRGB(0, 255, 140),
-    ElementBackground = Color3.fromRGB(16, 32, 22),
-    ElementBackgroundHover = Color3.fromRGB(24, 52, 34),
-    SecondaryElementBackground = Color3.fromRGB(12, 24, 16),
-    ElementStroke = Color3.fromRGB(0, 160, 80),
-    SecondaryElementStroke = Color3.fromRGB(0, 120, 60),
-    SliderBackground = Color3.fromRGB(20, 50, 30),
-    SliderProgress = Color3.fromRGB(0, 255, 140),
-    SliderStroke = Color3.fromRGB(0, 255, 140),
-    ToggleBackground = Color3.fromRGB(20, 45, 28),
-    ToggleEnabled = Color3.fromRGB(0, 255, 140),
-    ToggleDisabled = Color3.fromRGB(50, 75, 58),
-    ToggleCircle = Color3.fromRGB(255, 255, 255),
-    DropdownSelected = Color3.fromRGB(25, 65, 38),
-    DropdownUnselected = Color3.fromRGB(16, 32, 22),
-    InputBackground = Color3.fromRGB(14, 30, 20),
-    InputStroke = Color3.fromRGB(0, 180, 90),
-    PlaceholderColor = Color3.fromRGB(100, 160, 120)
+    TextColor = Color3.fromRGB(220, 240, 215),
+    Background = Color3.fromRGB(12, 20, 14),
+    Topbar = Color3.fromRGB(20, 34, 24),
+    Shadow = Color3.fromRGB(6, 12, 8),
+    NotificationBackground = Color3.fromRGB(16, 28, 20),
+    NotificationActionsBackground = Color3.fromRGB(26, 44, 30),
+    TabBackground = Color3.fromRGB(16, 28, 20),
+    TabStroke = Color3.fromRGB(120, 196, 93),
+    TabBackgroundSelected = Color3.fromRGB(28, 52, 34),
+    TabTextColor = Color3.fromRGB(180, 220, 175),
+    SelectedTabTextColor = Color3.fromRGB(120, 196, 93),
+    ElementBackground = Color3.fromRGB(16, 26, 19),
+    ElementBackgroundHover = Color3.fromRGB(24, 40, 28),
+    SecondaryElementBackground = Color3.fromRGB(12, 20, 14),
+    ElementStroke = Color3.fromRGB(120, 196, 93),
+    SecondaryElementStroke = Color3.fromRGB(78, 110, 68),
+    SliderBackground = Color3.fromRGB(20, 34, 24),
+    SliderProgress = Color3.fromRGB(120, 196, 93),
+    SliderStroke = Color3.fromRGB(222, 192, 126),
+    ToggleBackground = Color3.fromRGB(18, 30, 22),
+    ToggleEnabled = Color3.fromRGB(120, 196, 93),
+    ToggleDisabled = Color3.fromRGB(45, 60, 50),
+    ToggleCircle = Color3.fromRGB(222, 192, 126),
+    DropdownSelected = Color3.fromRGB(28, 52, 34),
+    DropdownUnselected = Color3.fromRGB(16, 26, 19),
+    InputBackground = Color3.fromRGB(14, 24, 17),
+    InputStroke = Color3.fromRGB(120, 196, 93),
+    PlaceholderColor = Color3.fromRGB(110, 150, 115)
 }
 
 local Window = nil
 if Rayfield then
+    if Rayfield.Themes then
+        Rayfield.Themes["Green"] = GreenTheme
+        Rayfield.Themes["Default"] = GreenTheme
+    end
     Window = Rayfield:CreateWindow({
         Name = "ym1co farmer 5.0",
         Icon = 0,
         LoadingTitle = "ym1co farmer 5.0",
-        LoadingSubtitle = "Green Edition",
-        Theme = "Default",
+        LoadingSubtitle = "Steampunk Emerald Edition",
+        Theme = GreenTheme,
         CustomTheme = GreenTheme,
         DisableRayfieldPrompts = false,
         DisableBuildWarnings = false,
@@ -286,6 +294,9 @@ if Rayfield then
         },
         KeySystem = false
     })
+    if Rayfield.ChangeTheme then
+        pcall(function() Rayfield:ChangeTheme(GreenTheme) end)
+    end
 end
 
 local function notifyUser(title, content, duration)
@@ -526,8 +537,40 @@ task.spawn(function()
     end)
 end)
 
--- ==================== ЗАЩИЩЕННЫЙ ПАРСЕР СУМКИ И УРОВНЯ ====================
-local lastKnownLevel = 0
+-- ==================== ЗАЩИЩЕННЫЙ ПАРСЕР СУМКИ, МОНЕТ И УРОВНЯ ====================
+local function getPlayerCoins()
+    local coins = sessionCoinsFarmed
+    pcall(function()
+        local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+        if playerGui then
+            local mainGui = playerGui:FindFirstChild("MainGUI")
+            if mainGui then
+                for _, obj in ipairs(mainGui:GetDescendants()) do
+                    if obj:IsA("TextLabel") and obj.Visible and obj.Text ~= "" then
+                        local p = obj.Parent
+                        local pName = p and p.Name:lower() or ""
+                        local oName = obj.Name:lower()
+                        if oName:find("coin") or oName:find("currency") or pName:find("coin") or pName:find("currency") or pName:find("gold") then
+                            local numStr = obj.Text:gsub("%D", "")
+                            local n = tonumber(numStr)
+                            if n and n >= 0 and n < 100000000 then
+                                coins = math.max(coins, n)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
+        if leaderstats then
+            local c = leaderstats:FindFirstChild("Coins") or leaderstats:FindFirstChild("Coin") or leaderstats:FindFirstChild("Gold")
+            if c and tonumber(c.Value) then
+                coins = math.max(coins, tonumber(c.Value))
+            end
+        end
+    end)
+    return coins
+end
 
 local function getCoinBagCount()
     -- 1. Если раунд не идет (в лобби нет монет) — сумка ВСЕГДА 0!
@@ -595,6 +638,7 @@ end
 
 local function getAccountStats()
     local currentBag = getCoinBagCount()
+    lastKnownCoins = math.max(lastKnownCoins, getPlayerCoins())
 
     local stats = {
         username = LocalPlayer.Name,
@@ -603,6 +647,7 @@ local function getAccountStats()
         level = lastKnownLevel,
         bag = currentBag,
         maxBag = Settings.MaxBagCapacity,
+        coins = lastKnownCoins,
         jobId = game.JobId,
         updatedAt = os.time(),
         timestamp = os.date("%Y-%m-%d %H:%M:%S")
@@ -633,6 +678,7 @@ local function getAccountStats()
 
     stats.level = lastKnownLevel
     stats.bag = currentBag
+    stats.coins = lastKnownCoins
 
     return stats
 end
@@ -665,13 +711,17 @@ local function exportStatsToFile()
                 return
             end
 
-            -- Записываем строго 1 строку на 1 акк: только ник и лвл
+            -- Записываем строго 1 строку на 1 акк: ник, лвл и объективный трекинг мешка
             local updated = false
             local newLines = {}
+            local bagCount = stats.bag or 0
+            local maxBag = stats.maxBag or Settings.MaxBagCapacity or 40
+            local statLine = string.format("User: %s | Level: %d | Bag: %d/%d", stats.username, stats.level, bagCount, maxBag)
+
             for line in string.gmatch(existing, "[^\r\n]+") do
                 if line:find(stats.username, 1, true) then
                     if not updated then
-                        table.insert(newLines, string.format("User: %s | Level: %d", stats.username, stats.level))
+                        table.insert(newLines, statLine)
                         updated = true
                     end
                 else
@@ -682,7 +732,7 @@ local function exportStatsToFile()
             end
 
             if not updated then
-                table.insert(newLines, string.format("User: %s | Level: %d", stats.username, stats.level))
+                table.insert(newLines, statLine)
             end
 
             table.sort(newLines)
@@ -1166,6 +1216,8 @@ end)
 
 local function touchCoin(coinPart, root)
     if not coinPart or not root then return end
+    sessionCoinsFarmed = sessionCoinsFarmed + 1
+    lastKnownCoins = math.max(lastKnownCoins, sessionCoinsFarmed)
     if firetouchinterest then
         pcall(function()
             firetouchinterest(root, coinPart, 0)
