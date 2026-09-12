@@ -1,28 +1,17 @@
 @echo off
-chcp 65001 >nul
-title MM2 Farm Manager GUI - Clockwork Sanctuary
 cd /d "%~dp0"
+title MM2 Farm Manager GUI
 
-echo =========================================================
-echo       MM2 FARM MANAGER GUI - CLOCKWORK SANCTUARY
-echo =========================================================
-echo.
-
-echo [*] Проверка и установка библиотек...
-py -m pip install requests psutil
+echo [*] Installing dependencies...
+py -m pip install requests psutil beautifulsoup4
 if errorlevel 1 (
-    python -m pip install requests psutil
+    python -m pip install requests psutil beautifulsoup4
 )
 
-echo.
-echo [*] Запуск MM2 Farm Manager GUI...
+echo [*] Starting GUI...
 py farm_manager_gui.py
 if errorlevel 1 (
     python farm_manager_gui.py
 )
 
-if errorlevel 1 (
-    echo.
-    echo [!] Ошибка при запуске менеджера.
-    pause
-)
+if errorlevel 1 pause

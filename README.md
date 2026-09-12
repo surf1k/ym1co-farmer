@@ -4,6 +4,29 @@
 
 ---
 
+## ⚡ Быстрый запуск и команды консоли (Quick Commands)
+
+Если не хочешь запускать через `.bat`, открой командную строку (CMD / PowerShell / Терминал) в папке с фермой и выполни:
+
+### 1. Установка всех необходимых библиотек:
+```cmd
+py -m pip install requests psutil beautifulsoup4
+```
+*(или через pip: `pip install requests psutil beautifulsoup4`)*
+
+### 2. Запуск Farm Manager с GUI:
+```cmd
+py farm_manager_gui.py
+```
+*(или через python: `python farm_manager_gui.py`)*
+
+### 3. Запуск консольной версии (без GUI):
+```cmd
+py farm_manager.py
+```
+
+---
+
 ## ⚡ Что делает система на полном автомате:
 
 1. **Бесключевая работа 24/7 (Xeno Keyless):** Никаких суточных ключей Linkvertise, капч и ежедневных переинжектов.
