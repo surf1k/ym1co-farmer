@@ -74,6 +74,47 @@ def is_farm_enabled() -> bool:
     return farm_enabled.is_set()
 
 
+# Трекинг количества последовательных ошибок подряд для каждого аккаунта
+account_fail_counts = {}
+
+
+def get_failure_count(username: str) -> int:
+    if not username:
+        return 0
+    return account_fail_counts.get(username.strip().lower(), 0)
+
+
+def reset_failure_count(username: str):
+    """Сбрасывает счетчик последовательных ошибок при успешном подключении и игре."""
+    if not username:
+        return
+    u_lower = username.strip().lower()
+    if account_fail_counts.get(u_lower, 0) > 0:
+        account_fail_counts[u_lower] = 0
+    clear_error(username)
+
+
+def record_failure(username: str, password: str, error_text: str, user_id=None, threshold=5):
+    """Учитывает ошибку аккаунта.
+    В errors.json (и в GUI) аккаунт попадает ТОЛЬКО если сбой повторился более 5 раз подряд (fails > threshold).
+    """
+    if not username:
+        return
+    u_lower = username.strip().lower()
+    current_fails = account_fail_counts.get(u_lower, 0) + 1
+    account_fail_counts[u_lower] = current_fails
+
+    print(
+        f"[FARM] [!] Сбой у бота {username} (Попытка {current_fails}/{threshold}): {error_text}"
+    )
+
+    if current_fails > threshold:
+        print(
+            f"[FARM] [🚨 ПОРОГ ПРЕВЫШЕН] Аккаунт {username} упал более {threshold} раз подряд ({current_fails})! Помещаем в errors.json..."
+        )
+        record_error(username, password, f"[{current_fails} сбоев подряд] {error_text}", user_id)
+
+
 def record_error(username, password, error_text, user_id=None):
     """Записывает ошибку бота, сохраняя логин и пароль для немедленного отображения в GUI."""
     try:
@@ -101,6 +142,8 @@ def clear_error(username):
         errors = load_json(ERRORS_FILE, [])
         errors = [e for e in errors if e.get("username") != username]
         save_json(ERRORS_FILE, errors)
+        if username:
+            account_fail_counts.pop(username.strip().lower(), None)
     except Exception:
         pass
 
@@ -1039,7 +1082,12 @@ def get_account_from_pool():
             print(
                 f"[FARM] [!] Ошибка куки для {username}: {err_msg}. Аккаунт: {username}, Пароль: {password}"
             )
-            record_error(username, password, err_msg, user_id)
+            record_failure(username, password, err_msg, user_id, threshold=5)
+            if get_failure_count(username) <= 5:
+                # Возвращаем в конец очереди пула для повторной попытки
+                with file_lock:
+                    with open(POOL_ACCOUNTS_FILE, "a", encoding="utf-8") as pf:
+                        pf.write(chosen_line + "\n")
             return None
         else:
             print(
@@ -1110,7 +1158,7 @@ def launch_roblox_instance(bot_entry):
         print(
             f"[FARM] [-] Запуск отменён: не удалось авторизовать {bot_entry['username']}. Пароль: {bot_entry.get('password')}"
         )
-        record_error(bot_entry["username"], bot_entry.get("password", ""), err_msg, bot_entry.get("userId"))
+        record_failure(bot_entry["username"], bot_entry.get("password", ""), err_msg, bot_entry.get("userId"), threshold=5)
         return None
 
     place_id = CFG["farm"].get("place_id", 142823291)
@@ -1324,6 +1372,11 @@ def farm_worker():
                     except Exception:
                         pass
 
+                # Если бот живой, статистика свежая и нет кика - он успешно фармит!
+                # Сбрасываем счетчик последовательных ошибок
+                if proc_alive and stats_recent and stats_status != "KICKED_OR_DISCONNECTED":
+                    reset_failure_count(bot["username"])
+
                 # 1. Если скрипт зафиксировал кик/дисконнект — перезапускаем процесс
                 if stats_status == "KICKED_OR_DISCONNECTED":
                     reason = ""
@@ -1337,7 +1390,7 @@ def farm_worker():
                     print(
                         f"[FARM] [!] Бот {bot['username']} (PID: {pid}) был кикнут или отключен! Пароль: {bot.get('password')}. Перезапуск окна..."
                     )
-                    record_error(bot["username"], bot.get("password", ""), err_msg, user_id)
+                    record_failure(bot["username"], bot.get("password", ""), err_msg, user_id, threshold=5)
                     if pid and psutil.pid_exists(pid):
                         try:
                             psutil.Process(int(pid)).kill()
@@ -1348,6 +1401,13 @@ def farm_worker():
                             os.remove(stats_file)
                         except Exception:
                             pass
+
+                    if get_failure_count(bot["username"]) > 5:
+                        print(
+                            f"[FARM] [🛑] Бот {bot['username']} превысил лимит сбоев (>5 подряд). Исключен из активных окон."
+                        )
+                        continue
+
                     proc_alive = False
                     bot["pid"] = None
                     bot["launched_at"] = 0
@@ -1359,7 +1419,7 @@ def farm_worker():
                     print(
                         f"[FARM] [!] Бот {bot['username']} (PID: {pid}) не выдал статистику за {int(time_since_launch)}с. Пароль: {bot.get('password')}. Перезапуск процесса..."
                     )
-                    record_error(bot["username"], bot.get("password", ""), err_msg, user_id)
+                    record_failure(bot["username"], bot.get("password", ""), err_msg, user_id, threshold=5)
                     if pid and psutil.pid_exists(pid):
                         try:
                             psutil.Process(int(pid)).kill()
@@ -1370,6 +1430,13 @@ def farm_worker():
                             os.remove(stats_file)
                         except Exception:
                             pass
+
+                    if get_failure_count(bot["username"]) > 5:
+                        print(
+                            f"[FARM] [🛑] Бот {bot['username']} превысил лимит сбоев (>5 подряд). Исключен из активных окон."
+                        )
+                        continue
+
                     proc_alive = False
                     bot["pid"] = None
                     bot["launched_at"] = 0
@@ -1381,7 +1448,7 @@ def farm_worker():
                     print(
                         f"[FARM] [!] Бот {bot['username']} (PID: {pid}) не обновляет статистику >90с. Пароль: {bot.get('password')}. Перезапуск процесса..."
                     )
-                    record_error(bot["username"], bot.get("password", ""), err_msg, user_id)
+                    record_failure(bot["username"], bot.get("password", ""), err_msg, user_id, threshold=5)
                     if pid and psutil.pid_exists(pid):
                         try:
                             psutil.Process(int(pid)).kill()
@@ -1392,21 +1459,34 @@ def farm_worker():
                             os.remove(stats_file)
                         except Exception:
                             pass
+
+                    if get_failure_count(bot["username"]) > 5:
+                        print(
+                            f"[FARM] [🛑] Бот {bot['username']} превысил лимит сбоев (>5 подряд). Исключен из активных окон."
+                        )
+                        continue
+
                     proc_alive = False
                     bot["pid"] = None
                     bot["launched_at"] = 0
                     bot["session_launched"] = False
 
-                # 3. Если процесс живой, проверяем не призрак ли он (окно закрылось/упало, а процесс висит без окна)
+                # 4. Если процесс живой, проверяем не призрак ли он (окно закрылось/упало, а процесс висит без окна)
                 elif proc_alive:
                     if not stats_recent and time_since_launch > 300 and not has_visible_roblox_window(pid):
                         print(
                             f"[FARM] [!] Окно бота {bot['username']} (PID: {pid}) исчезло с экрана (процесс-призрак, возраст {int(time_since_launch)}с). Сброс..."
                         )
+                        record_failure(bot["username"], bot.get("password", ""), "Окно исчезло с экрана (процесс-призрак)", user_id, threshold=5)
                         try:
                             psutil.Process(int(pid)).kill()
                         except Exception:
                             pass
+                        if get_failure_count(bot["username"]) > 5:
+                            print(
+                                f"[FARM] [🛑] Бот {bot['username']} превысил лимит сбоев (>5 подряд). Исключен из активных окон."
+                            )
+                            continue
                         proc_alive = False
                         bot["pid"] = None
                         bot["launched_at"] = 0
@@ -1434,10 +1514,14 @@ def farm_worker():
                             print(
                                 f"[FARM] [!] Окно бота {bot['username']} (PID: {pid}) зависло в системе ('Не отвечает'). Перезапуск..."
                             )
+                            record_failure(bot["username"], bot.get("password", ""), "Окно зависло ('Не отвечает')", user_id, threshold=5)
                             try:
                                 psutil.Process(int(pid)).terminate()
                             except Exception:
                                 pass
+                            if get_failure_count(bot["username"]) > 5:
+                                print(f"[FARM] [🛑] Бот {bot['username']} превысил лимит сбоев (>5 подряд). Исключен из активных окон.")
+                                continue
                             time.sleep(2)
                             new_pid = launch_roblox_instance(bot)
                             if new_pid:
@@ -1445,6 +1529,13 @@ def farm_worker():
                                 bot["launched_at"] = time.time()
                                 bot["hung_ticks"] = 0
                                 bot["session_launched"] = True
+                            else:
+                                if get_failure_count(bot["username"]) > 5:
+                                    print(f"[FARM] [🛑] Бот {bot['username']} превысил лимит сбоев (>5 подряд). Исключен из активных окон.")
+                                    continue
+                                bot["pid"] = None
+                                bot["launched_at"] = 0
+                                bot["session_launched"] = False
                     else:
                         bot["hung_ticks"] = 0
                 else:
@@ -1469,6 +1560,13 @@ def farm_worker():
                         bot["launched_at"] = time.time()
                         bot["hung_ticks"] = 0
                         bot["session_launched"] = True
+                    else:
+                        if get_failure_count(bot["username"]) > 5:
+                            print(f"[FARM] [🛑] Бот {bot['username']} превысил лимит сбоев (>5 подряд). Исключен из активных окон.")
+                            continue
+                        bot["pid"] = None
+                        bot["launched_at"] = 0
+                        bot["session_launched"] = False
 
                 updated_pool.append(bot)
 
@@ -1525,6 +1623,22 @@ def farm_worker():
                         new_bot["session_launched"] = True
                         updated_pool.append(new_bot)
                         save_json(ACTIVE_POOL_FILE, updated_pool)
+                    else:
+                        # Запуск не удался
+                        with file_lock:
+                            if os.path.exists(ACCOUNTS_FILE):
+                                try:
+                                    with open(ACCOUNTS_FILE, "r", encoding="utf-8") as af:
+                                        alines = [l for l in af if not l.startswith(f"{new_bot['username']}:")]
+                                    with open(ACCOUNTS_FILE, "w", encoding="utf-8") as af:
+                                        af.writelines(alines)
+                                except Exception:
+                                    pass
+                        if get_failure_count(new_bot["username"]) <= 5:
+                            line = f"{new_bot['username']}:{new_bot.get('password','')}:{new_bot['cookie']}:{new_bot['userId']}"
+                            with file_lock:
+                                with open(POOL_ACCOUNTS_FILE, "a", encoding="utf-8") as pf:
+                                    pf.write(line + "\n")
                 else:
                     now = time.time()
                     if (now - last_empty_notice) >= 45:
