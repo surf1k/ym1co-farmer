@@ -1734,7 +1734,7 @@ def funpay_worker():
         "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
     })
 
-    last_raise_time = 0
+    next_raise_time = 0
     last_online_time = 0
     last_reported_count = -1
 
@@ -1807,41 +1807,48 @@ def funpay_worker():
                 except Exception:
                     pass
 
-            # 3. Авто-поднятие лотов (каждый час проверяем кулдаун)
-            if now - last_raise_time > 3600:
+            # 3. Авто-поднятие лотов (проверяем кулдаун)
+            if now >= next_raise_time:
                 try:
-                    m_node = re.search(r'/lots/(\d+)/?', category_url)
-                    node_id = m_node.group(1) if m_node else "925"
+                    trade_url = category_url.rstrip("/") + "/trade"
+                    r_trade = session.get(trade_url, timeout=10)
+                    if r_trade.status_code == 200:
+                        c_token = ""
+                        m_csrf = re.search(r'data-app-data="([^"]+)"', r_trade.text)
+                        if m_csrf:
+                            try:
+                                ap = json.loads(m_csrf.group(1).replace("&quot;", '"'))
+                                c_token = ap.get("csrf-token", "")
+                            except Exception:
+                                pass
 
-                    r_cat = session.get(category_url, timeout=10)
-                    c_token = ""
-                    m_csrf = re.search(r'data-app-data="([^"]+)"', r_cat.text)
-                    if m_csrf:
-                        try:
-                            ap = json.loads(m_csrf.group(1).replace("&quot;", '"'))
-                            c_token = ap.get("csrf-token", "")
-                        except Exception:
-                            pass
+                        m_game = re.search(r'data-game="(\d+)"', r_trade.text)
+                        game_id = m_game.group(1) if m_game else "141"
 
-                    raise_headers = {"X-Requested-With": "XMLHttpRequest"}
-                    if c_token:
-                        raise_headers["X-CSRF-Token"] = c_token
-                    r_raise = session.post(
-                        "https://funpay.com/lots/raise",
-                        data={"node_id": node_id, "game_id": ""},
-                        headers=raise_headers,
-                        timeout=10
-                    )
-                    if r_raise.status_code == 200:
-                        last_raise_time = now
-                        try:
-                            r_json = r_raise.json()
-                            if r_json.get("msg"):
-                                print(f"[FUNPAY] [↑] Поднятие лотов: {r_json.get('msg')}")
-                        except Exception:
-                            pass
+                        m_node = re.search(r'data-node="(\d+)"', r_trade.text)
+                        node_id = m_node.group(1) if m_node else "925"
+
+                        raise_headers = {"X-Requested-With": "XMLHttpRequest"}
+                        if c_token:
+                            raise_headers["X-CSRF-Token"] = c_token
+                        r_raise = session.post(
+                            "https://funpay.com/lots/raise",
+                            data={"game_id": game_id, "node_id": node_id},
+                            headers=raise_headers,
+                            timeout=10
+                        )
+                        if r_raise.status_code == 200:
+                            try:
+                                r_json = r_raise.json()
+                                msg = r_json.get("msg", "")
+                                wait_sec = r_json.get("wait", 3600)
+                                next_raise_time = now + max(300, int(wait_sec))
+                                if msg:
+                                    print(f"[FUNPAY] [↑] Поднятие лотов: {msg} (Следующее через {int(wait_sec // 60)} мин)")
+                            except Exception:
+                                next_raise_time = now + 3600
                 except Exception:
-                    pass
+                    next_raise_time = now + 600
 
             # 4. Авто-выставление и обновление лота (с товарами из done.txt в поле secrets)
             if lot_id and str(lot_id) not in ("0", "12345678"):
