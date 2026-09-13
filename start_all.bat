@@ -9,9 +9,13 @@ if %errorlevel% equ 0 (
 )
 
 echo [*] Installing dependencies...
-py -m pip install requests psutil beautifulsoup4
+py -m pip install -r requirements.txt --quiet
 if errorlevel 1 (
-    python -m pip install requests psutil beautifulsoup4
+    python -m pip install -r requirements.txt --quiet
+)
+py -m playwright install chromium >nul 2>&1
+if errorlevel 1 (
+    python -m playwright install chromium >nul 2>&1
 )
 
 if not exist "config.json" (
