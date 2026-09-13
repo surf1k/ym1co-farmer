@@ -12,6 +12,7 @@ import time
 
 import psutil
 import requests
+from html.parser import HTMLParser
 try:
     from bs4 import BeautifulSoup
 except ImportError:
@@ -1654,32 +1655,82 @@ def farm_worker():
             time.sleep(10)
 
 
+class FunPayFormParser(HTMLParser):
+    """Парсер формы редактирования лота FunPay с сохранением всех полей, select и textarea."""
+    def __init__(self):
+        super().__init__()
+        self.inputs = {}
+        self.current_tag = None
+        self.current_name = None
+        self.current_text = ""
+        self.current_select = None
+        self.select_selected = None
+
+    def handle_starttag(self, tag, attrs):
+        attr_dict = dict(attrs)
+        self.current_tag = tag
+        name = attr_dict.get("name")
+        if tag == "input" and name:
+            itype = attr_dict.get("type", "text").lower()
+            if itype == "checkbox":
+                if "checked" in attr_dict:
+                    self.inputs[name] = attr_dict.get("value", "on")
+            elif itype == "radio":
+                if "checked" in attr_dict:
+                    self.inputs[name] = attr_dict.get("value", "")
+            else:
+                self.inputs[name] = attr_dict.get("value", "")
+        elif tag == "select" and name:
+            self.current_select = name
+            self.select_selected = ""
+        elif tag == "option" and self.current_select:
+            if "selected" in attr_dict:
+                self.select_selected = attr_dict.get("value", "")
+        elif tag == "textarea" and name:
+            self.current_name = name
+            self.current_text = ""
+
+    def handle_data(self, data):
+        if self.current_tag == "textarea" and self.current_name:
+            self.current_text += data
+
+    def handle_endtag(self, tag):
+        if tag == "select" and self.current_select:
+            self.inputs[self.current_select] = self.select_selected
+            self.current_select = None
+            self.select_selected = None
+        elif tag == "textarea" and self.current_name:
+            self.inputs[self.current_name] = self.current_text
+            self.current_name = None
+        self.current_tag = None
+
+
+def get_done_accounts():
+    """Считывает строки готовых аккаунтов (100 lvl) из done.txt во всех возможных папках."""
+    candidates = [
+        DONE_FILE,
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), DONE_FILE),
+        os.path.join(os.getcwd(), DONE_FILE),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            try:
+                with file_lock:
+                    with open(c, "r", encoding="utf-8") as df:
+                        lines = [l.strip() for l in df if l.strip()]
+                        if lines:
+                            return lines
+            except Exception:
+                pass
+    return []
+
+
 # ==================== МОДУЛЬ FUNPAY (АВТОВЫДАЧА И АВТОПОДНЯТИЕ) ====================
 def funpay_worker():
-    fp_cfg = CFG.get("funpay", {})
-    if not fp_cfg.get("enabled", False):
-        return
-
     print("[*] Модуль FunPay запущен...")
-    golden_key = fp_cfg.get("golden_key", "").strip()
-    user_agent = fp_cfg.get(
-        "user_agent",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    )
-    lot_id = fp_cfg.get("lot_id")
-    category_url = fp_cfg.get("category_url", "https://funpay.com/lots/925/")
-    min_price = float(fp_cfg.get("min_price_usd", fp_cfg.get("min_price", 2.5)))
-    undercut_step = float(fp_cfg.get("undercut_step_usd", fp_cfg.get("undercut_step", 0.01)))
-    check_interval = int(fp_cfg.get("check_interval_sec", 40))
-
-    if not golden_key or golden_key == "ВАШ_GOLDEN_KEY":
-        print("[FUNPAY] [i] Строки готовых аккаунтов (100 lvl) записываются в done.txt в формате FunPay:")
-        print("         name: nick pass: password, 100 lvl")
-        print("[FUNPAY] [i] Для автоподнятия лотов и автовыдачи укажите ваш 'golden_key' в config.json.")
-
     session = requests.Session()
     session.headers.update({
-        "User-Agent": user_agent,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
     })
 
@@ -1689,12 +1740,32 @@ def funpay_worker():
 
     while True:
         try:
+            cur_cfg = load_json(CONFIG_FILE, CFG)
+            cur_fp = cur_cfg.get("funpay", {})
+            if not cur_fp.get("enabled", False):
+                time.sleep(10)
+                continue
+
+            golden_key = cur_fp.get("golden_key", "").strip()
+            user_agent = cur_fp.get(
+                "user_agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            session.headers["User-Agent"] = user_agent
+            lot_id = cur_fp.get("lot_id")
+            category_url = cur_fp.get("category_url", "https://funpay.com/lots/925/")
+            min_price = float(cur_fp.get("min_price_usd", cur_fp.get("min_price", 2.5)))
+            undercut_step = float(cur_fp.get("undercut_step_usd", cur_fp.get("undercut_step", 0.01)))
+            check_interval = int(cur_fp.get("check_interval_sec", 40))
+
+            if not golden_key or golden_key == "ВАШ_GOLDEN_KEY":
+                time.sleep(check_interval)
+                continue
+
+            session.cookies.set("golden_key", golden_key, domain=".funpay.com")
+
             # 1. Читаем готовые аккаунты из done.txt
-            done_accounts = []
-            if os.path.exists(DONE_FILE):
-                with file_lock:
-                    with open(DONE_FILE, "r", encoding="utf-8") as df:
-                        done_accounts = [l.strip() for l in df if l.strip()]
+            done_accounts = get_done_accounts()
 
             if len(done_accounts) != last_reported_count:
                 last_reported_count = len(done_accounts)
@@ -1702,133 +1773,146 @@ def funpay_worker():
                 if done_accounts:
                     print(f"[FUNPAY] Последний готовый: {done_accounts[-1]}")
 
-            # Читаем актуальный golden_key (мог обновиться в файле конфига)
-            cur_cfg = load_json(CONFIG_FILE, CFG)
-            cur_fp = cur_cfg.get("funpay", {})
-            g_key = cur_fp.get("golden_key", "").strip()
+            now = time.time()
 
-            if g_key and g_key != "ВАШ_GOLDEN_KEY":
-                session.cookies.set("golden_key", g_key, domain=".funpay.com")
+            # 2. Вечный онлайн (каждые 45-60 секунд)
+            if now - last_online_time > 45:
+                try:
+                    resp_main = session.get("https://funpay.com/", timeout=10)
+                    csrf_match = re.search(r'data-app-data="([^"]+)"', resp_main.text)
+                    csrf_token = ""
+                    if csrf_match:
+                        try:
+                            ap = json.loads(csrf_match.group(1).replace("&quot;", '"'))
+                            csrf_token = ap.get("csrf-token", "")
+                        except Exception:
+                            pass
 
-                now = time.time()
+                    h_runner = {"X-Requested-With": "XMLHttpRequest"}
+                    if csrf_token:
+                        h_runner["X-CSRF-Token"] = csrf_token
 
-                # 2. Вечный онлайн (каждые 45-60 секунд)
-                if now - last_online_time > 45:
-                    try:
-                        resp_main = session.get("https://funpay.com/", timeout=10)
-                        csrf_match = re.search(r'data-app-data="([^"]+)"', resp_main.text)
-                        csrf_token = ""
-                        if csrf_match:
+                    payload = {
+                        "objects": json.dumps([
+                            {"type": "chat_bookmarks", "id": 0, "tag": 0, "data": False},
+                            {"type": "chat_node", "id": 0, "tag": 0, "data": False},
+                            {"type": "orders_counters", "id": 0, "tag": 0, "data": False}
+                        ]),
+                        "request": False,
+                        "csrf_token": csrf_token
+                    }
+                    r_runner = session.post("https://funpay.com/runner/", data=payload, headers=h_runner, timeout=10)
+                    if r_runner.status_code == 200:
+                        last_online_time = now
+                except Exception:
+                    pass
+
+            # 3. Авто-поднятие лотов (каждый час проверяем кулдаун)
+            if now - last_raise_time > 3600:
+                try:
+                    m_node = re.search(r'/lots/(\d+)/?', category_url)
+                    node_id = m_node.group(1) if m_node else "925"
+
+                    r_cat = session.get(category_url, timeout=10)
+                    c_token = ""
+                    m_csrf = re.search(r'data-app-data="([^"]+)"', r_cat.text)
+                    if m_csrf:
+                        try:
+                            ap = json.loads(m_csrf.group(1).replace("&quot;", '"'))
+                            c_token = ap.get("csrf-token", "")
+                        except Exception:
+                            pass
+
+                    raise_headers = {"X-Requested-With": "XMLHttpRequest"}
+                    if c_token:
+                        raise_headers["X-CSRF-Token"] = c_token
+                    r_raise = session.post(
+                        "https://funpay.com/lots/raise",
+                        data={"node_id": node_id, "game_id": ""},
+                        headers=raise_headers,
+                        timeout=10
+                    )
+                    if r_raise.status_code == 200:
+                        last_raise_time = now
+                        try:
+                            r_json = r_raise.json()
+                            if r_json.get("msg"):
+                                print(f"[FUNPAY] [↑] Поднятие лотов: {r_json.get('msg')}")
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            # 4. Авто-выставление и обновление лота (с товарами из done.txt в поле secrets)
+            if lot_id and str(lot_id) not in ("0", "12345678"):
+                try:
+                    r_cat = session.get(category_url, timeout=10)
+                    lowest = min_price
+                    if r_cat.status_code == 200:
+                        prices = []
+                        for p_match in re.findall(r'data-price="([\d\.]+)"', r_cat.text):
                             try:
-                                ap = json.loads(csrf_match.group(1).replace("&quot;", '"'))
-                                csrf_token = ap.get("csrf-token", "")
-                            except Exception:
+                                pv = float(p_match)
+                                if pv > 0.5:
+                                    prices.append(pv)
+                            except ValueError:
                                 pass
+                        if prices:
+                            lowest = min(prices)
+                    target_price = max(min_price, round(lowest - undercut_step, 2))
 
-                        h_runner = {"X-Requested-With": "XMLHttpRequest"}
-                        if csrf_token:
-                            h_runner["X-CSRF-Token"] = csrf_token
+                    edit_url = f"https://funpay.com/lots/offerEdit?offer={lot_id}"
+                    r_edit = session.get(edit_url, timeout=10)
+                    if r_edit.status_code == 200:
+                        parser = FunPayFormParser()
+                        parser.feed(r_edit.text)
+                        post_data = dict(parser.inputs)
 
-                        payload = {
-                            "objects": json.dumps([
-                                {"type": "chat_bookmarks", "id": 0, "tag": 0, "data": False},
-                                {"type": "chat_node", "id": 0, "tag": 0, "data": False},
-                                {"type": "orders_counters", "id": 0, "tag": 0, "data": False}
-                            ]),
-                            "request": False,
-                            "csrf_token": csrf_token
-                        }
-                        r_runner = session.post("https://funpay.com/runner/", data=payload, headers=h_runner, timeout=10)
-                        if r_runner.status_code == 200:
-                            last_online_time = now
-                    except Exception:
-                        pass
+                        form_csrf_val = post_data.get("csrf_token")
+                        if not form_csrf_val:
+                            m_csrf = re.search(r'name="csrf_token"\s+value="([^"]+)"', r_edit.text)
+                            if m_csrf:
+                                form_csrf_val = m_csrf.group(1)
+                                post_data["csrf_token"] = form_csrf_val
 
-                # 3. Авто-поднятие лотов (каждый час проверяем кулдаун)
-                if now - last_raise_time > 3600:
-                    try:
                         m_node = re.search(r'/lots/(\d+)/?', category_url)
                         node_id = m_node.group(1) if m_node else "925"
 
-                        r_cat = session.get(category_url, timeout=10)
-                        c_token = ""
-                        m_csrf = re.search(r'data-app-data="([^"]+)"', r_cat.text)
-                        if m_csrf:
-                            try:
-                                ap = json.loads(m_csrf.group(1).replace("&quot;", '"'))
-                                c_token = ap.get("csrf-token", "")
-                            except Exception:
-                                pass
+                        post_data["offer_id"] = str(lot_id)
+                        post_data["node_id"] = str(node_id)
+                        post_data["price"] = str(target_price)
+                        post_data["amount"] = str(len(done_accounts))
+                        post_data["auto_delivery"] = "on"
+                        post_data["secrets"] = "\n".join(done_accounts)
 
-                        raise_headers = {"X-Requested-With": "XMLHttpRequest"}
-                        if c_token:
-                            raise_headers["X-CSRF-Token"] = c_token
-                        r_raise = session.post(
-                            "https://funpay.com/lots/raise",
-                            data={"node_id": node_id, "game_id": ""},
-                            headers=raise_headers,
+                        if len(done_accounts) > 0:
+                            post_data["active"] = "on"
+                        else:
+                            post_data.pop("active", None)
+
+                        save_h = {"X-Requested-With": "XMLHttpRequest"}
+                        if form_csrf_val:
+                            save_h["X-CSRF-Token"] = form_csrf_val
+                        r_save = session.post(
+                            "https://funpay.com/lots/offerSave",
+                            data=post_data,
+                            headers=save_h,
                             timeout=10
                         )
-                        if r_raise.status_code == 200:
-                            last_raise_time = now
+                        if r_save.status_code == 200:
                             try:
-                                r_json = r_raise.json()
-                                if r_json.get("msg"):
-                                    print(f"[FUNPAY] [↑] Поднятие лотов: {r_json.get('msg')}")
+                                res_json = r_save.json()
+                                if res_json.get("done"):
+                                    print(f"[FUNPAY] [+] Лот #{lot_id} успешно синхронизирован с FunPay! Цена: {target_price} {cur_fp.get('currency', 'USD')} | В наличии: {len(done_accounts)} шт. (Автовыдача обновлена)")
+                                else:
+                                    err_msg = res_json.get("error") or res_json.get("errors")
+                                    print(f"[FUNPAY] [!] Ошибка сохранения лота #{lot_id}: {err_msg}")
                             except Exception:
                                 pass
-                    except Exception:
-                        pass
+                except Exception as e:
+                    print(f"[FUNPAY] [!] Ошибка обновления лота: {e}")
 
-                # 4. Авто-выставление и обновление лота при наличии готовых аккаунтов
-                if lot_id and str(lot_id) != "12345678":
-                    try:
-                        r_cat = session.get(category_url, timeout=10)
-                        if r_cat.status_code == 200:
-                            prices = []
-                            for p_match in re.findall(r'data-price="([\d\.]+)"', r_cat.text):
-                                try:
-                                    pv = float(p_match)
-                                    if pv > 0.5:
-                                        prices.append(pv)
-                                except ValueError:
-                                    pass
-
-                            lowest = min(prices) if prices else min_price
-                            target_price = max(min_price, round(lowest - undercut_step, 2))
-
-                            edit_url = f"https://funpay.com/lots/offerEdit?offer={lot_id}"
-                            r_edit = session.get(edit_url, timeout=10)
-                            if r_edit.status_code == 200:
-                                form_csrf = re.search(r'name="csrf_token"\s+value="([^"]+)"', r_edit.text)
-                                form_csrf_val = form_csrf.group(1) if form_csrf else ""
-
-                                m_node = re.search(r'/lots/(\d+)/?', category_url)
-                                node_id = m_node.group(1) if m_node else "925"
-
-                                post_data = {
-                                    "csrf_token": form_csrf_val,
-                                    "offer_id": str(lot_id),
-                                    "node_id": str(node_id),
-                                    "price": str(target_price),
-                                    "amount": str(len(done_accounts)),
-                                    "active": "on" if len(done_accounts) > 0 else ""
-                                }
-                                save_h = {"X-Requested-With": "XMLHttpRequest"}
-                                if form_csrf_val:
-                                    save_h["X-CSRF-Token"] = form_csrf_val
-                                r_save = session.post(
-                                    "https://funpay.com/lots/offerSave",
-                                    data=post_data,
-                                    headers=save_h,
-                                    timeout=10
-                                )
-                                if r_save.status_code == 200:
-                                    print(f"[FUNPAY] [+] Лот #{lot_id} синхронизирован с FunPay! Цена: {target_price} {cur_fp.get('currency', 'USD')} | В наличии: {len(done_accounts)} шт.")
-                    except Exception:
-                        pass
-
-        except Exception:
+        except Exception as e:
             pass
 
         time.sleep(check_interval)
