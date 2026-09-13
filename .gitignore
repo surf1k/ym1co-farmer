@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+config.json
+accounts.txt
+active_pool.json
+bot_ids.json
+errors.json
+done.txt
+ignored_accounts.json
+mm2_farm_stats.txt

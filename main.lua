@@ -34,6 +34,28 @@ local lastKnownLevel = 0
 local lastKnownCoins = 0
 local sessionCoinsFarmed = 0
 
+-- Загрузка сохраненного прогресса аккаунта (уровень и монеты) при перезапуске/краше
+pcall(function()
+    if isfile and readfile then
+        local sfName = "stats_" .. tostring(LocalPlayer.UserId) .. ".json"
+        if isfile(sfName) then
+            local raw = readfile(sfName)
+            if raw and #raw > 0 then
+                local data = HttpService:JSONDecode(raw)
+                if data then
+                    if data.level and tonumber(data.level) then
+                        lastKnownLevel = math.max(lastKnownLevel, tonumber(data.level))
+                    end
+                    if data.coins and tonumber(data.coins) then
+                        lastKnownCoins = math.max(lastKnownCoins, tonumber(data.coins))
+                        sessionCoinsFarmed = lastKnownCoins
+                    end
+                end
+            end
+        end
+    end
+end)
+
 -- ==================== ДЕТЕКТ КИКА / ДИСКОННЕКТА -> ВЫХОД И ПЕРЕЗАПУСК ДЛЯ SOLARA ====================
 local function initDisconnectHandler()
     local function triggerExit(reason)
@@ -360,7 +382,9 @@ local Settings = {
 
     AutoExportStats = true,
     ExportInterval = 5,
-    CustomLogFileName = "mm2_farm_stats.txt"
+    CustomLogFileName = "mm2_farm_stats.txt",
+    TargetLevel = 100,
+    TargetCoins = 40000
 }
 
 -- Anti-AFK
@@ -580,10 +604,26 @@ local function getPlayerCoins()
     return coins
 end
 
+local lastRecordedBag = 0
+
+local function updateCoinBagTracking(currentBag)
+    if not currentBag then return end
+    if currentBag > lastRecordedBag then
+        local gained = currentBag - lastRecordedBag
+        sessionCoinsFarmed = sessionCoinsFarmed + gained
+        lastKnownCoins = math.max(lastKnownCoins, sessionCoinsFarmed)
+        lastRecordedBag = currentBag
+    elseif currentBag < lastRecordedBag then
+        -- Раунд окончен, смерть или разгрузка сумки: сбрасываем счетчик мешка без уменьшения заработанных монет
+        lastRecordedBag = currentBag
+    end
+end
+
 local function getCoinBagCount()
     -- 1. Если раунд не идет (в лобби нет монет) — сумка ВСЕГДА 0!
     local container = getCoinContainer()
     if not container or #container:GetChildren() == 0 then
+        updateCoinBagTracking(0)
         return 0
     end
 
@@ -641,12 +681,14 @@ local function getCoinBagCount()
         end
     end)
 
+    updateCoinBagTracking(count)
     return count
 end
 
 local function getAccountStats()
     local currentBag = getCoinBagCount()
-    lastKnownCoins = math.max(lastKnownCoins, getPlayerCoins())
+    lastKnownCoins = math.max(lastKnownCoins, getPlayerCoins(), sessionCoinsFarmed)
+    sessionCoinsFarmed = math.max(sessionCoinsFarmed, lastKnownCoins)
 
     local stats = {
         username = LocalPlayer.Name,
@@ -707,8 +749,8 @@ local function exportStatsToFile()
                 existing = readfile(logName) or ""
             end
 
-            -- Если бот уже достиг 100 лвл, переносим/удаляем его из активного лога
-            if stats.level >= 100 then
+            -- Если бот уже достиг цели (уровень >= 100 и монеты >= 40000), удаляем его из активного лога
+            if stats.level >= (Settings.TargetLevel or 100) and (stats.coins or 0) >= (Settings.TargetCoins or 40000) then
                 local remaining = {}
                 for line in string.gmatch(existing, "[^\r\n]+") do
                     if not line:find(stats.username, 1, true) then
@@ -719,12 +761,12 @@ local function exportStatsToFile()
                 return
             end
 
-            -- Записываем строго 1 строку на 1 акк: ник, лвл и объективный трекинг мешка
+            -- Записываем строго 1 строку на 1 акк: ник, лвл, монеты и объективный трекинг мешка
             local updated = false
             local newLines = {}
             local bagCount = stats.bag or 0
             local maxBag = stats.maxBag or Settings.MaxBagCapacity or 40
-            local statLine = string.format("User: %s | Level: %d | Bag: %d/%d", stats.username, stats.level, bagCount, maxBag)
+            local statLine = string.format("User: %s | Level: %d | Coins: %s | Bag: %d/%d", stats.username, stats.level, tostring(stats.coins or 0), bagCount, maxBag)
 
             for line in string.gmatch(existing, "[^\r\n]+") do
                 if line:find(stats.username, 1, true) then
@@ -1224,8 +1266,6 @@ end)
 
 local function touchCoin(coinPart, root)
     if not coinPart or not root then return end
-    sessionCoinsFarmed = sessionCoinsFarmed + 1
-    lastKnownCoins = math.max(lastKnownCoins, sessionCoinsFarmed)
     if firetouchinterest then
         pcall(function()
             firetouchinterest(root, coinPart, 0)

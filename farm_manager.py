@@ -275,10 +275,10 @@ def get_farm_snapshot():
             except Exception:
                 pass
 
-        lvl = stats.get("level", 0)
+        lvl = max(stats.get("level", 0), b.get("max_level", 0))
         bag = stats.get("bag", 0)
         max_bag = stats.get("maxBag", 40)
-        coins = stats.get("coins", 0)
+        coins = max(stats.get("coins", 0), b.get("max_coins", 0))
         total_farmed_coins += coins
         status = stats.get("status", "LAUNCHING" if proc_alive else "STOPPED")
         error_msg = stats.get("error", "")
@@ -313,6 +313,7 @@ def get_farm_snapshot():
         "active_bots_count": len(bots_data),
         "max_bots": CFG.get("hardware_limits", {}).get("absolute_max_bots_safety_cap", 50),
         "target_level": CFG.get("farm", {}).get("target_level", 100),
+        "target_coins": CFG.get("farm", {}).get("target_coins", 40000),
         "ram_percent": vm.percent,
         "ram_used_gb": round((vm.total - vm.available) / (1024 ** 3), 1),
         "ram_total_gb": round(vm.total / (1024 ** 3), 1),
@@ -1246,9 +1247,10 @@ def launch_roblox_instance(bot_entry):
 def farm_worker():
     print("[*] Авто-скейлер фермы запущен (RAM Unlimited Mode)...")
     ws = get_workspace_path()
-    target_lvl = CFG["farm"].get("target_level", 100)
+    target_lvl = CFG.get("farm", {}).get("target_level", 100)
+    target_coins = CFG.get("farm", {}).get("target_coins", 40000)
     safety_cap = CFG.get("hardware_limits", {}).get("absolute_max_bots_safety_cap", 50)
-    check_interval = int(CFG["farm"].get("check_stats_interval_sec", 10))
+    check_interval = int(CFG.get("farm", {}).get("check_stats_interval_sec", 10))
     last_empty_notice = 0
     # На старте синхронизируем уже запущенные окна Roblox
     init_pool = load_json(ACTIVE_POOL_FILE, [])
@@ -1310,6 +1312,7 @@ def farm_worker():
                 stats_file = find_stats_file(user_id)
 
                 bot_lvl = 0
+                bot_coins = 0
                 stats_status = None
 
                 if os.path.exists(stats_file):
@@ -1317,22 +1320,33 @@ def farm_worker():
                         with open(stats_file, "r", encoding="utf-8") as sf:
                             st = json.load(sf)
                             bot_lvl = st.get("level", 0)
+                            bot_coins = st.get("coins", 0)
                             stats_status = st.get("status")
                     except Exception:
                         pass
 
-                # Цель достигнута по УРОВНЮ!
-                if bot_lvl >= target_lvl:
+                # Обновляем максимальные значения для сессии
+                bot_lvl = max(bot_lvl, bot.get("max_level", 0))
+                bot["max_level"] = bot_lvl
+                bot_coins = max(bot_coins, bot.get("max_coins", 0))
+                bot["max_coins"] = bot_coins
+
+                target_lvl = CFG.get("farm", {}).get("target_level", 100)
+                target_coins = CFG.get("farm", {}).get("target_coins", 40000)
+
+                # Цель достигнута по УРОВНЮ и МОНЕТАМ!
+                goal_reached = (bot_lvl >= target_lvl and bot_coins >= target_coins) if target_coins > 0 else (bot_lvl >= target_lvl)
+                if goal_reached:
                     print(
-                        f"\n[FARM] [★] ГОТОВ К ПРОДАЖЕ: {bot['username']} | Lvl: {bot_lvl}"
+                        f"\n[FARM] [★] ГОТОВ К ПРОДАЖЕ: {bot['username']} | Lvl: {bot_lvl} | Coins: {bot_coins:,}"
                     )
                     clear_error(bot["username"])
 
                     with file_lock:
                         with open(DONE_FILE, "a", encoding="utf-8") as df:
-                            # Формат строго для FunPay: name: nick pass: password, 100 lvl
+                            # Формат строго для FunPay: name: nick pass: password, 100 lvl, 40,000 coins
                             df.write(
-                                f"name: {bot['username']} pass: {bot['password']}, {bot_lvl} lvl\n"
+                                f"name: {bot['username']} pass: {bot['password']}, {bot_lvl} lvl, {bot_coins:,} coins\n"
                             )
 
                     remove_account_from_ram(bot["username"], user_id)
@@ -1574,25 +1588,27 @@ def farm_worker():
             # Сохраняем полный пул ПОСЛЕ прохода всех ботов
             save_json(ACTIVE_POOL_FILE, updated_pool)
 
-            # Запись файла активного прогресса: ник, лвл и объективный трекинг мешка
+            # Запись файла активного прогресса: ник, лвл, баланс монет и объективный трекинг мешка
             active_lines = []
             for b in updated_pool:
                 uid = b.get("userId")
                 uname = b.get("username")
                 sf = find_stats_file(uid)
-                lvl = 0
+                lvl = b.get("max_level", 0)
+                coins = b.get("max_coins", 0)
                 bag = 0
                 max_bag = 40
                 if sf and os.path.exists(sf):
                     try:
                         with open(sf, "r", encoding="utf-8") as _f:
                             st = json.load(_f)
-                            lvl = st.get("level", 0)
+                            lvl = max(lvl, st.get("level", 0))
+                            coins = max(coins, st.get("coins", 0))
                             bag = st.get("bag", 0)
                             max_bag = st.get("maxBag", 40)
                     except Exception:
                         pass
-                active_lines.append(f"User: {uname} | Level: {lvl} | Bag: {bag}/{max_bag}\n")
+                active_lines.append(f"User: {uname} | Level: {lvl} | Coins: {coins:,} | Bag: {bag}/{max_bag}\n")
 
             active_lines.sort()
             all_target_dirs = {os.getcwd(), ws}

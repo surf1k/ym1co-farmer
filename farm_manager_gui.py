@@ -362,7 +362,7 @@ class FarmManagerGUI:
             self.render_errors(snap.get("errors", []))
 
             # Рендер карточек активных ботов (in-place)
-            self.render_bots(snap.get("bots", []))
+            self.render_bots(snap.get("bots", []), target_lvl=snap.get("target_level", 100), target_coins=snap.get("target_coins", 40000))
 
         except Exception as e:
             print(f"[GUI REFRESH ERROR]: {e}")
@@ -445,7 +445,7 @@ class FarmManagerGUI:
                 self.error_card_widgets[uname]["frame"].destroy()
                 del self.error_card_widgets[uname]
 
-    def render_bots(self, bots):
+    def render_bots(self, bots, target_lvl=100, target_coins=40000):
         """Плавный in-place рендер ботов (без пересоздания виджетов и потери скролла)."""
         if not bots:
             if not self.empty_bots_label:
@@ -468,8 +468,10 @@ class FarmManagerGUI:
             up_s = bot.get("uptime_sec", 0)
             up_str = f"{up_s // 60}м {up_s % 60}с" if up_s > 0 else "0с"
             lvl = bot.get("level", 0)
-            lvl_frac = min(1.0, max(0.0, lvl / 100.0))
             coins = bot.get("coins", 0)
+            lvl_frac = min(1.0, max(0.0, lvl / float(target_lvl))) if target_lvl > 0 else 1.0
+            coin_frac = min(1.0, max(0.0, coins / float(target_coins))) if target_coins > 0 else 1.0
+            total_frac = min(lvl_frac, coin_frac) if target_coins > 0 else lvl_frac
             st = (bot.get("status") or "FARMING").upper()
             st_color = COLOR_ERROR_TEXT if ("KICK" in st or "ERROR" in st) else (COLOR_GOLD if ("WAIT" in st or "LOBBY" in st) else COLOR_EMERALD)
 
@@ -479,10 +481,10 @@ class FarmManagerGUI:
                 w = self.bot_card_widgets[uname]
                 w["lbl_status"].config(text=f"  ● {st}  ", fg=st_color)
                 w["lbl_pid_up"].config(text=f"PID: {pid_val}  •  Аптайм: {up_str}")
-                w["lbl_lvl"].config(text=f"⭐ Прогресс Уровня MM2: {lvl} / 100")
-                w["lbl_pct"].config(text=f"{int(lvl_frac * 100)}%")
-                w["bar"].set_fraction(lvl_frac)
-                w["lbl_coins"].config(text=f"🪙 Баланс монет MM2: {coins:,}")
+                w["lbl_lvl"].config(text=f"⭐ Прогресс Уровня MM2: {lvl} / {target_lvl}")
+                w["lbl_pct"].config(text=f"{int(total_frac * 100)}%")
+                w["bar"].set_fraction(total_frac)
+                w["lbl_coins"].config(text=f"🪙 Баланс монет MM2: {coins:,} / {target_coins:,}")
             else:
                 card = tk.Frame(self.scrollable_bots_frame, bg=COLOR_SURFACE, highlightthickness=1.5, highlightbackground=COLOR_CARD_BORDER, padx=14, pady=10)
                 card.pack(fill=tk.X, pady=4)
@@ -501,23 +503,23 @@ class FarmManagerGUI:
                 lbl_pid_up = tk.Label(r1, text=f"PID: {pid_val}  •  Аптайм: {up_str}", bg=COLOR_SURFACE, fg=COLOR_TEXT_MUTED, font=self.font_sub)
                 lbl_pid_up.pack(side=tk.RIGHT, padx=10)
 
-                # 2. Прогресс УРОВНЯ MM2 (без мешка в GUI!)
+                # 2. Прогресс УРОВНЯ и МОНЕТ MM2
                 r2 = tk.Frame(card, bg=COLOR_SURFACE)
                 r2.pack(fill=tk.X, pady=(6, 2))
-                lbl_lvl = tk.Label(r2, text=f"⭐ Прогресс Уровня MM2: {lvl} / 100", bg=COLOR_SURFACE, fg=COLOR_TEXT_MAIN, font=self.font_sub)
+                lbl_lvl = tk.Label(r2, text=f"⭐ Прогресс Уровня MM2: {lvl} / {target_lvl}", bg=COLOR_SURFACE, fg=COLOR_TEXT_MAIN, font=self.font_sub)
                 lbl_lvl.pack(side=tk.LEFT)
-                lbl_pct = tk.Label(r2, text=f"{int(lvl_frac * 100)}%", bg=COLOR_SURFACE, fg=COLOR_TEXT_MUTED, font=self.font_sub)
+                lbl_pct = tk.Label(r2, text=f"{int(total_frac * 100)}%", bg=COLOR_SURFACE, fg=COLOR_TEXT_MUTED, font=self.font_sub)
                 lbl_pct.pack(side=tk.RIGHT)
 
                 bar = SteampunkProgressBar(card, height=8, fill_color=COLOR_EMERALD, bg=COLOR_CARD)
                 bar.pack(fill=tk.X, pady=2)
-                bar.set_fraction(lvl_frac)
+                bar.set_fraction(total_frac)
 
                 # 3. Баланс монет MM2 и быстрое копирование
                 r3 = tk.Frame(card, bg=COLOR_SURFACE)
                 r3.pack(fill=tk.X, pady=(6, 0))
 
-                lbl_coins = tk.Label(r3, text=f"🪙 Баланс монет MM2: {coins:,}", bg=COLOR_SURFACE, fg=COLOR_BRIGHT_GOLD, font=self.font_header)
+                lbl_coins = tk.Label(r3, text=f"🪙 Баланс монет MM2: {coins:,} / {target_coins:,}", bg=COLOR_SURFACE, fg=COLOR_BRIGHT_GOLD, font=self.font_header)
                 lbl_coins.pack(side=tk.LEFT)
 
                 btn_copy_both = tk.Button(r3, text="📋 Логин:Пароль", bg="#1c2d22", fg=COLOR_TEXT_MAIN, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, font=self.font_small_bold, cursor="hand2", command=lambda u=uname, p=pwd: (copy_to_clipboard(self.root, f"{u}:{p}"), self.status_lbl.configure(text=f"✓ Скопировано: {u}:{p}")))

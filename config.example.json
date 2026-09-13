@@ -11,7 +11,7 @@
   "farm": {
     "roblox_executable_path": "",
     "target_level": 100,
-    "target_coins": 0,
+    "target_coins": 40000,
     "executor_workspace_path": "",
     "ram_account_data_path": "",
     "place_id": 142823291,
