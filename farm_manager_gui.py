@@ -600,8 +600,36 @@ class FarmManagerGUI:
         b_box = tk.Frame(dialog, bg=COLOR_SURFACE)
         b_box.pack(fill=tk.X, padx=16, pady=10)
 
+        def do_purge_all_done():
+            from tkinter import messagebox
+            if not messagebox.askyesno(
+                "Подтверждение зачистки",
+                "Вы уверены, что хотите ПОЛНОСТЬЮ удалить все эти готовые аккаунты отовсюду с ПК?\n\n"
+                "Они будут навсегда удалены из:\n"
+                "• accounts.txt и accounts_pool.txt\n"
+                "• txt.txt (BloxGen CSV)\n"
+                "• Roblox Account Manager (RAM)\n"
+                "• mm2_farm_stats.txt и bot_ids.json\n"
+                "• Файлов статистики воркспейсов Real/Xeno\n"
+                "• done.txt\n"
+                "И занесены в ignored_accounts.json, чтобы никогда больше не импортироваться."
+            ):
+                return
+            count = 0
+            for line in content.splitlines():
+                if not line.strip():
+                    continue
+                uname, uid = farm_manager.extract_user_info_from_line(line)
+                if uname:
+                    farm_manager.delete_account_completely(uname, user_id=uid, also_done=True)
+                    count += 1
+            self.status_lbl.configure(text=f"✓ Зачищено {count} готовых аккаунтов отовсюду с ПК!")
+            self.refresh_ui()
+            dialog.destroy()
+
         if content:
-            tk.Button(b_box, text="📋 Скопировать всё", bg="#3d2c18", fg=COLOR_BRIGHT_GOLD, font=self.font_sub, relief="flat", highlightthickness=1, highlightbackground=COLOR_GOLD, padx=10, pady=4, command=lambda: (copy_to_clipboard(self.root, content), self.status_lbl.configure(text="✓ Все готовые аккаунты скопированы!"))).pack(side=tk.LEFT)
+            tk.Button(b_box, text="📋 Скопировать всё", bg="#3d2c18", fg=COLOR_BRIGHT_GOLD, font=self.font_sub, relief="flat", highlightthickness=1, highlightbackground=COLOR_GOLD, padx=10, pady=4, command=lambda: (copy_to_clipboard(self.root, content), self.status_lbl.configure(text="✓ Все готовые аккаунты скопированы!"))).pack(side=tk.LEFT, padx=(0, 6))
+            tk.Button(b_box, text="🗑️ Зачистить проданные отовсюду с ПК", bg="#3a1818", fg="#ff7777", activebackground="#552222", activeforeground="#ffffff", font=self.font_sub, relief="flat", highlightthickness=1, highlightbackground="#aa3333", padx=10, pady=4, command=do_purge_all_done).pack(side=tk.LEFT, padx=6)
 
         tk.Button(b_box, text="Закрыть", bg="#1c2d22", fg=COLOR_TEXT_MAIN, font=self.font_sub, relief="flat", padx=10, pady=4, command=dialog.destroy).pack(side=tk.RIGHT)
 

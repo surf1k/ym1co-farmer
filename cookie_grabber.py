@@ -408,17 +408,44 @@ def login_and_get_cookie(username: str, password: str, headless: bool = True) ->
 
 
 def get_existing_usernames(target_file: str = ACCOUNTS_FILE) -> Set[str]:
-    """Возвращает список уже имеющихся аккаунтов в нижнем регистре."""
+    """Возвращает список уже имеющихся аккаунтов, а также проданных/игнорируемых."""
     existing = set()
-    if os.path.exists(target_file):
+    for tf in [target_file, ACCOUNTS_FILE, POOL_FILE]:
+        if os.path.exists(tf):
+            try:
+                with open(tf, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        parts = line.strip().split(":")
+                        if parts and parts[0].strip():
+                            existing.add(parts[0].strip().lower())
+            except Exception:
+                pass
+
+    # Проверяем ignored_accounts.json (аккаунты, удаленные навсегда/проданные)
+    import json
+    if os.path.exists("ignored_accounts.json"):
         try:
-            with open(target_file, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    parts = line.strip().split(":")
-                    if parts and parts[0].strip():
-                        existing.add(parts[0].strip().lower())
+            with open("ignored_accounts.json", "r", encoding="utf-8") as f:
+                ignored = json.load(f)
+                for ig in ignored:
+                    if ig and isinstance(ig, str):
+                        existing.add(ig.strip().lower())
         except Exception:
             pass
+
+    # Проверяем done.txt
+    if os.path.exists("done.txt"):
+        try:
+            with open("done.txt", "r", encoding="utf-8") as f:
+                for l in f:
+                    m = re.search(r'name:\s*([^\s,]+)', l, re.IGNORECASE)
+                    if m:
+                        existing.add(m.group(1).strip().lower())
+                    elif ":" in l:
+                        existing.add(l.split(":")[0].strip().lower())
+        except Exception:
+            pass
+
     return existing
 
 

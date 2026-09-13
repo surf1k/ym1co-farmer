@@ -149,79 +149,244 @@ def clear_error(username):
         pass
 
 
-def delete_account_completely(username: str):
-    """Полностью и навсегда удаляет аккаунт из фермы:
-    1. Добавляет имя в ignored_accounts.json (чтобы он больше НИКОГДА не импортировался из RAM / AccountData.json).
-    2. Удаляет из errors.json.
-    3. Вырезает строку из accounts_pool.txt.
-    4. Вырезает строку из accounts.txt.
-    5. Завершает процесс игры (если бот запущен) и удаляет из active_pool.json.
+def extract_user_info_from_line(line: str):
+    """Извлекает username и (если есть) userId из любой строки (FunPay done, CSV, pool, user:pass:cookie:id)."""
+    uname = ""
+    uid = None
+    line = line.strip()
+    if not line:
+        return "", None
+
+    # 1. Формат FunPay / done.txt: name: User pass: Password, 100 lvl, 40,000 coins
+    m_name = re.search(r'name:\s*([^\s,]+)', line, re.IGNORECASE)
+    if m_name:
+        uname = m_name.group(1).strip()
+        m_id = re.search(r'id:\s*(\d+)', line, re.IGNORECASE)
+        if m_id:
+            uid = m_id.group(1).strip()
+        return uname, uid
+
+    # 2. Формат Real BloxGen CSV: timestamp, username, userId, ...
+    if "," in line and not line.startswith("{"):
+        pts = [p.strip() for p in line.split(",")]
+        if len(pts) >= 2 and pts[0].isdigit():
+            uname = pts[1]
+            if len(pts) >= 3 and pts[2].isdigit():
+                uid = pts[2]
+            return uname, uid
+
+    # 3. Формат username:password:cookie:userId или username:::userId или username:password
+    if ":" in line:
+        pts = [p.strip() for p in line.split(":")]
+        uname = pts[0]
+        if len(pts) >= 4 and pts[3].isdigit():
+            uid = pts[3]
+        return uname, uid
+
+    return line, None
+
+
+def delete_account_completely(username: str, user_id=None, also_done: bool = False):
+    """ПОЛНАЯ ЗАЧИСТКА АККАУНТА ОТО ВСЮДА С ПК:
+    Вызывается после отправки аккаунта на FunPay / достижения 100 lvl:
+    1. Исключает из accounts.txt.
+    2. Исключает из accounts_pool.txt.
+    3. Исключает из txt.txt (Real CSV / ферма), real_accounts.txt, accounts_raw.txt.
+    4. Исключает из всех копий AccountData.json (Roblox Account Manager RAM).
+    5. Заносит в ignored_accounts.json (чтобы больше НИКОГДА не возвращался в пул/cookie grabber).
+    6. Удаляет из errors.json.
+    7. Удаляет из mm2_farm_stats.txt.
+    8. Удаляет из bot_ids.json.
+    9. Удаляет файлы статистики stats_{userId}.json и stats_{username}.json из воркспейсов Real/Xeno.
+    10. Завершает процесс игры (если бот ещё запущен) и убирает из active_pool.json.
+    11. Если also_done=True (аккаунт залит на FunPay) — удаляет строку и из done.txt!
     """
     if not username:
         return
     u_lower = username.strip().lower()
-    print(f"[ACCOUNT_DELETE] Навсегда удаляем аккаунт {username} из фермы...")
+    uid_str = str(user_id).strip() if user_id is not None else ""
+    print(f"[PURGE] Полная зачистка аккаунта {username} (ID: {uid_str or '?'}) отовсюду с ПК...")
 
-    # 1. Заносим в ignored_accounts.json
+    def get_candidate_paths(base_name):
+        return list(dict.fromkeys([
+            base_name,
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), base_name),
+            os.path.join(os.getcwd(), base_name),
+        ]))
+
+    # 1. Заносим в ignored_accounts.json (защита от повторного авто-импорта)
     try:
         ignored = load_json(IGNORED_ACCOUNTS_FILE, [])
         if u_lower not in [str(x).lower() for x in ignored]:
             ignored.append(username)
             save_json(IGNORED_ACCOUNTS_FILE, ignored)
     except Exception as e:
-        print(f"[ACCOUNT_DELETE] Ошибка записи в {IGNORED_ACCOUNTS_FILE}: {e}")
+        print(f"[PURGE] Ошибка записи в {IGNORED_ACCOUNTS_FILE}: {e}")
 
     # 2. Удаляем из errors.json
     clear_error(username)
 
     # 3. Вырезаем из accounts_pool.txt
-    if os.path.exists(POOL_ACCOUNTS_FILE):
-        try:
-            with file_lock:
-                with open(POOL_ACCOUNTS_FILE, "r", encoding="utf-8") as f:
-                    lines = [l for l in f if l.strip()]
-                new_lines = []
-                for l in lines:
-                    p = parse_account_line(l)
-                    if p and p.get("username", "").strip().lower() == u_lower:
-                        continue
-                    new_lines.append(l)
-                with open(POOL_ACCOUNTS_FILE, "w", encoding="utf-8") as f:
-                    for l in new_lines:
-                        f.write(l.strip() + "\n")
-        except Exception as e:
-            print(f"[ACCOUNT_DELETE] Ошибка очистки {POOL_ACCOUNTS_FILE}: {e}")
+    for p_file in get_candidate_paths(POOL_ACCOUNTS_FILE):
+        if os.path.exists(p_file):
+            try:
+                with file_lock:
+                    with open(p_file, "r", encoding="utf-8") as f:
+                        lines = [l for l in f if l.strip()]
+                    new_lines = []
+                    for l in lines:
+                        p = parse_account_line(l)
+                        if p and (p.get("username", "").strip().lower() == u_lower or (uid_str and str(p.get("userId", "")).strip() == uid_str)):
+                            continue
+                        new_lines.append(l)
+                    with open(p_file, "w", encoding="utf-8") as f:
+                        for l in new_lines:
+                            f.write(l.strip() + "\n")
+            except Exception as e:
+                print(f"[PURGE] Ошибка очистки {p_file}: {e}")
 
     # 4. Вырезаем из accounts.txt
-    if os.path.exists(ACCOUNTS_FILE):
-        try:
-            with file_lock:
-                with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
-                    lines = [l for l in f if l.strip()]
-                new_lines = []
-                for l in lines:
-                    p = parse_account_line(l)
-                    if p and p.get("username", "").strip().lower() == u_lower:
-                        continue
-                    new_lines.append(l)
-                with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
-                    for l in new_lines:
-                        f.write(l.strip() + "\n")
-        except Exception as e:
-            print(f"[ACCOUNT_DELETE] Ошибка очистки {ACCOUNTS_FILE}: {e}")
+    for a_file in get_candidate_paths(ACCOUNTS_FILE):
+        if os.path.exists(a_file):
+            try:
+                with file_lock:
+                    with open(a_file, "r", encoding="utf-8") as f:
+                        lines = [l for l in f if l.strip()]
+                    new_lines = []
+                    for l in lines:
+                        p = parse_account_line(l)
+                        if p and (p.get("username", "").strip().lower() == u_lower or (uid_str and str(p.get("userId", "")).strip() == uid_str)):
+                            continue
+                        new_lines.append(l)
+                    with open(a_file, "w", encoding="utf-8") as f:
+                        for l in new_lines:
+                            f.write(l.strip() + "\n")
+            except Exception as e:
+                print(f"[PURGE] Ошибка очистки {a_file}: {e}")
 
-    # 5. Завершаем активный процесс если есть
+    # 5. Вырезаем из txt.txt, real_accounts.txt, accounts_raw.txt
+    for raw_name in ["txt.txt", "real_accounts.txt", "accounts_raw.txt"]:
+        for t_file in get_candidate_paths(raw_name):
+            if os.path.exists(t_file):
+                try:
+                    with file_lock:
+                        with open(t_file, "r", encoding="utf-8") as f:
+                            lines = [l for l in f if l.strip()]
+                        new_lines = []
+                        for l in lines:
+                            p = parse_account_line(l)
+                            if p and (p.get("username", "").strip().lower() == u_lower or (uid_str and str(p.get("userId", "")).strip() == uid_str)):
+                                continue
+                            if "," in l:
+                                pts = [x.strip() for x in l.split(",")]
+                                if len(pts) >= 2 and pts[1].lower() == u_lower:
+                                    continue
+                                if len(pts) >= 3 and uid_str and pts[2] == uid_str:
+                                    continue
+                            new_lines.append(l)
+                        with open(t_file, "w", encoding="utf-8") as f:
+                            for l in new_lines:
+                                f.write(l.strip() + "\n")
+                except Exception:
+                    pass
+
+    # 6. Вырезаем из всех копий AccountData.json (RAM)
+    try:
+        remove_account_from_ram(username, user_id=user_id)
+    except Exception as e:
+        print(f"[PURGE] Ошибка удаления из RAM: {e}")
+
+    # 7. Вырезаем из mm2_farm_stats.txt
+    for s_file in get_candidate_paths(MM2_STATS_FILE):
+        if os.path.exists(s_file):
+            try:
+                with file_lock:
+                    with open(s_file, "r", encoding="utf-8") as f:
+                        lines = [l for l in f if l.strip()]
+                    new_lines = [l for l in lines if not re.search(rf"\bUser:\s*{re.escape(username)}\b", l, re.IGNORECASE)]
+                    with open(s_file, "w", encoding="utf-8") as f:
+                        for l in new_lines:
+                            f.write(l.strip() + "\n")
+            except Exception:
+                pass
+
+    # 8. Удаляем из bot_ids.json
+    for b_file in get_candidate_paths("bot_ids.json"):
+        if os.path.exists(b_file):
+            try:
+                b_ids = load_json(b_file, {})
+                changed = False
+                for k in list(b_ids.keys()):
+                    if k.lower() == u_lower or (uid_str and str(b_ids[k]).strip() == uid_str):
+                        del b_ids[k]
+                        changed = True
+                if changed:
+                    save_json(b_file, b_ids)
+            except Exception:
+                pass
+
+    # 9. Удаляем локальные файлы статистики из воркспейсов Real и Xeno
+    try:
+        cand_ws = [
+            find_executor_workspace_path(),
+            os.path.expandvars(r"%LOCALAPPDATA%\Real\workspace"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Xeno\workspace"),
+            r"C:\Users\DDDen\AppData\Local\Real\workspace",
+            r"C:\Users\DDDen\AppData\Local\Xeno\workspace",
+        ]
+        for ws_dir in set(cand_ws):
+            if not ws_dir or not os.path.isdir(ws_dir):
+                continue
+            for fname in [f"stats_{uid_str}.json", f"stats_{username}.json", f"stats_{u_lower}.json"]:
+                if not fname or fname.startswith("stats_."):
+                    continue
+                f_path = os.path.join(ws_dir, fname)
+                if os.path.exists(f_path):
+                    try:
+                        os.remove(f_path)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # 10. Завершаем активный процесс игры (если бот ещё в игре) и убираем из active_pool.json
     try:
         active_pool = load_json(ACTIVE_POOL_FILE, [])
         for b in active_pool:
-            if b.get("username", "").strip().lower() == u_lower:
+            if b.get("username", "").strip().lower() == u_lower or (uid_str and str(b.get("userId", "")).strip() == uid_str):
                 pid = b.get("pid")
                 if pid:
                     kill_pid(pid)
-        active_pool = [b for b in active_pool if b.get("username", "").strip().lower() != u_lower]
+        active_pool = [
+            b for b in active_pool
+            if b.get("username", "").strip().lower() != u_lower
+            and (not uid_str or str(b.get("userId", "")).strip() != uid_str)
+        ]
         save_json(ACTIVE_POOL_FILE, active_pool)
     except Exception as e:
-        print(f"[ACCOUNT_DELETE] Ошибка очистки {ACTIVE_POOL_FILE}: {e}")
+        print(f"[PURGE] Ошибка очистки {ACTIVE_POOL_FILE}: {e}")
+
+    # 11. Если also_done=True (аккаунт залит на FunPay) — удаляем и из done.txt!
+    if also_done:
+        for d_file in get_candidate_paths(DONE_FILE):
+            if os.path.exists(d_file):
+                try:
+                    with file_lock:
+                        with open(d_file, "r", encoding="utf-8") as f:
+                            lines = [l for l in f if l.strip()]
+                        new_lines = [
+                            l for l in lines
+                            if not re.search(rf"\bname:\s*{re.escape(username)}\b", l, re.IGNORECASE)
+                            and not l.lower().startswith(u_lower + ":")
+                            and not ("," in l and len(l.split(",")) >= 2 and l.split(",")[1].strip().lower() == u_lower)
+                        ]
+                        with open(d_file, "w", encoding="utf-8") as f:
+                            for l in new_lines:
+                                f.write(l.strip() + "\n")
+                except Exception:
+                    pass
+
+    print(f"[PURGE] [✓] Аккаунт {username} успешно удалён отовсюду с ПК!")
 
 
 def get_farm_snapshot():
@@ -664,33 +829,61 @@ def add_account_to_ram(username, password, cookie, user_id):
                 print(f"[RAM] [!] Ошибка записи в RAM: {e}")
 
 
-def remove_account_from_ram(username, user_id):
-    ram_path = find_ram_account_data_path()
-    if not ram_path or not os.path.exists(ram_path):
-        return
+def remove_account_from_ram(username, user_id=None):
+    candidates = [
+        find_ram_account_data_path(),
+        r"C:\Users\DDDen\Desktop\farm\RAM\AccountData.json",
+        r"C:\Users\DDDen\Desktop\RAM\AccountData.json",
+        os.path.expandvars(r"%USERPROFILE%\Desktop\farm\RAM\AccountData.json"),
+        os.path.expandvars(r"%USERPROFILE%\Desktop\RAM\AccountData.json"),
+        os.path.expandvars(r"%USERPROFILE%\Downloads\RAM\AccountData.json"),
+        os.path.join(os.getcwd(), "RAM", "AccountData.json"),
+        os.path.join(os.getcwd(), "AccountData.json"),
+    ]
+    for d in glob.glob(r"C:\Users\*\Desktop\*\RAM\AccountData.json"):
+        candidates.append(d)
+    for d in glob.glob(r"C:\Users\*\Desktop\RAM\AccountData.json"):
+        candidates.append(d)
+
+    u_lower = username.strip().lower() if username else ""
+    uid_str = str(user_id).strip() if user_id is not None else ""
 
     with file_lock:
-        try:
-            with open(ram_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            return
-
-        if isinstance(data, list):
-            new_data = [
-                item
-                for item in data
-                if item.get("Username") != username
-                and item.get("UserId") != user_id
-                and item.get("UserId") != int(user_id if str(user_id).isdigit() else -1)
-            ]
-
+        for ram_path in set(candidates):
+            if not ram_path or not os.path.isfile(ram_path):
+                continue
             try:
-                with open(ram_path, "w", encoding="utf-8") as f:
-                    json.dump(new_data, f, indent=4)
-                print(f"[RAM] [-] Аккаунт {username} вычищен из RAM.")
-            except Exception as e:
-                print(f"[RAM] [!] Ошибка удаления из RAM: {e}")
+                with open(ram_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    orig_len = len(data)
+                    new_data = [
+                        item
+                        for item in data
+                        if (item.get("Username") or "").strip().lower() != u_lower
+                        and (item.get("Name") or "").strip().lower() != u_lower
+                        and (not uid_str or str(item.get("UserId", "")).strip() != uid_str)
+                    ]
+                    if len(new_data) != orig_len:
+                        with open(ram_path, "w", encoding="utf-8") as f:
+                            json.dump(new_data, f, indent=4)
+                        print(f"[RAM] [-] Аккаунт {username} вычищен из RAM ({ram_path}).")
+                elif isinstance(data, dict):
+                    to_del = [
+                        k for k, item in data.items()
+                        if isinstance(item, dict) and (
+                            (item.get("Username") or "").strip().lower() == u_lower
+                            or (uid_str and str(item.get("UserId", "")).strip() == uid_str)
+                        )
+                    ]
+                    if to_del:
+                        for k in to_del:
+                            del data[k]
+                        with open(ram_path, "w", encoding="utf-8") as f:
+                            json.dump(data, f, indent=4)
+                        print(f"[RAM] [-] Аккаунт {username} вычищен из RAM ({ram_path}).")
+            except Exception:
+                pass
 
 
 # ==================== ПРОВЕРКА РЕСУРСОВ ЖЕЛЕЗА (RAM UNLIMITED) ====================
@@ -1388,22 +1581,9 @@ def farm_worker():
                                 f"name: {bot['username']} pass: {bot['password']}, {bot_lvl} lvl, {bot_coins:,} coins\n"
                             )
 
-                    remove_account_from_ram(bot["username"], user_id)
-
-                    pid = bot.get("pid")
-                    if pid and psutil.pid_exists(pid):
-                        try:
-                            psutil.Process(pid).terminate()
-                            print(f"[FARM] [-] Процесс {pid} закрыт, слот свободен.")
-                        except Exception:
-                            pass
-
-                    if os.path.exists(stats_file):
-                        try:
-                            os.remove(stats_file)
-                        except Exception:
-                            pass
-
+                    # Полная зачистка аккаунта отовсюду с ПК (из пула, accounts.txt, txt.txt, RAM, стат), кроме done.txt
+                    delete_account_completely(bot["username"], user_id=user_id, also_done=False)
+                    print(f"[FARM] [-] Аккаунт {bot['username']} зачищен из пула и отправлен в {DONE_FILE}. Слот свободен.")
                     continue
 
                 # Проверка краша процесса или зависания
@@ -1940,14 +2120,26 @@ def funpay_worker():
                         m_node = re.search(r'/lots/(\d+)/?', category_url)
                         node_id = m_node.group(1) if m_node else "925"
 
+                        existing_secrets = post_data.get("secrets", "")
+                        existing_lines = [l.strip() for l in existing_secrets.splitlines() if l.strip()]
+
+                        # Сохраняем уже имеющиеся в FunPay лоте секреты и мерджим с новыми готовыми из done.txt
+                        merged_secrets = list(existing_lines)
+                        accounts_to_purge = []
+                        for acc in done_accounts:
+                            if acc not in merged_secrets:
+                                merged_secrets.append(acc)
+                            accounts_to_purge.append(acc)
+
+                        total_count = len(merged_secrets)
                         post_data["offer_id"] = str(lot_id)
                         post_data["node_id"] = str(node_id)
                         post_data["price"] = str(target_price)
-                        post_data["amount"] = str(len(done_accounts))
+                        post_data["amount"] = str(total_count)
                         post_data["auto_delivery"] = "on"
-                        post_data["secrets"] = "\n".join(done_accounts)
+                        post_data["secrets"] = "\n".join(merged_secrets)
 
-                        if len(done_accounts) > 0:
+                        if total_count > 0:
                             post_data["active"] = "on"
                         else:
                             post_data.pop("active", None)
@@ -1965,7 +2157,13 @@ def funpay_worker():
                             try:
                                 res_json = r_save.json()
                                 if res_json.get("done"):
-                                    print(f"[FUNPAY] [+] Лот #{lot_id} успешно синхронизирован с FunPay! Цена: {target_price} {cur_fp.get('currency', 'USD')} | В наличии: {len(done_accounts)} шт. (Автовыдача обновлена)")
+                                    print(f"[FUNPAY] [+] Лот #{lot_id} успешно синхронизирован с FunPay! Цена: {target_price} {cur_fp.get('currency', 'USD')} | В наличии: {total_count} шт. (Автовыдача обновлена)")
+                                    if accounts_to_purge:
+                                        print(f"[FUNPAY] [🗑️] Зачистка {len(accounts_to_purge)} выставленных аккаунтов со всех файлов ПК...")
+                                        for d_line in accounts_to_purge:
+                                            u_name, u_id = extract_user_info_from_line(d_line)
+                                            if u_name:
+                                                delete_account_completely(u_name, user_id=u_id, also_done=True)
                                 else:
                                     err_msg = res_json.get("error") or res_json.get("errors")
                                     print(f"[FUNPAY] [!] Ошибка сохранения лота #{lot_id}: {err_msg}")
