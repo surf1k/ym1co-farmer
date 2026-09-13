@@ -1584,6 +1584,10 @@ def farm_worker():
                     # Полная зачистка аккаунта отовсюду с ПК (из пула, accounts.txt, txt.txt, RAM, стат), кроме done.txt
                     delete_account_completely(bot["username"], user_id=user_id, also_done=False)
                     print(f"[FARM] [-] Аккаунт {bot['username']} зачищен из пула и отправлен в {DONE_FILE}. Слот свободен.")
+
+                    # АВТОМАТИЧЕСКАЯ ЗАЛИВКА НА FUNPAY: ВЫКИНУЛО -> ПРОВЕРИЛО -> ЕСЛИ ДА СНЕСЛО -> ЕСЛИ НЕТ ДИАГНОСТИКА
+                    print(f"[FARM] [⚡] Запуск мгновенной авто-выгрузки готового аккаунта {bot['username']} на FunPay...")
+                    threading.Thread(target=sync_and_verify_funpay_lot, daemon=True).start()
                     continue
 
                 # Проверка краша процесса или зависания
@@ -1941,28 +1945,475 @@ class FunPayFormParser(HTMLParser):
 
 
 def get_done_accounts():
-    """Считывает строки готовых аккаунтов (100 lvl) из done.txt во всех возможных папках."""
-    candidates = [
+    """Считывает уникальные строки готовых аккаунтов (100 lvl) из done.txt во всех возможных папках."""
+    candidates = list(dict.fromkeys([
         DONE_FILE,
         os.path.join(os.path.dirname(os.path.abspath(__file__)), DONE_FILE),
         os.path.join(os.getcwd(), DONE_FILE),
-    ]
+    ]))
+    all_lines = []
     for c in candidates:
         if os.path.exists(c):
             try:
                 with file_lock:
                     with open(c, "r", encoding="utf-8") as df:
-                        lines = [l.strip() for l in df if l.strip()]
-                        if lines:
-                            return lines
+                        for l in df:
+                            ls = l.strip()
+                            if ls and ls not in all_lines:
+                                all_lines.append(ls)
             except Exception:
                 pass
-    return []
+    return all_lines
+
+
+def format_funpay_error(res_json, raw_text: str) -> str:
+    """Форматирует ошибки FunPay в понятный диагностический текст на русском."""
+    if not res_json:
+        lower = raw_text.lower()
+        if "login" in lower:
+            return "Сессия истекла (FunPay требует повторного логина)."
+        if "captcha" in lower or "g-recaptcha" in lower or "cf-mitigated" in lower:
+            return "FunPay заблокировал запрос капчей или Cloudflare защитой."
+        if "phone" in lower or "телефон" in lower or "sms" in lower:
+            return "FunPay требует привязки или подтверждения номера телефона / 2FA."
+        return f"Неизвестный ответ сервера (HTTP): {raw_text[:200]}"
+
+    err = res_json.get("error")
+    errs = res_json.get("errors")
+    msg = res_json.get("msg")
+
+    reasons = []
+    if isinstance(err, str) and err:
+        reasons.append(err)
+    if isinstance(msg, str) and msg:
+        reasons.append(msg)
+    if isinstance(errs, list):
+        for e in errs:
+            if isinstance(e, str):
+                reasons.append(e)
+            elif isinstance(e, dict):
+                reasons.extend(str(v) for v in e.values() if v)
+    elif isinstance(errs, dict):
+        for k, v in errs.items():
+            if isinstance(v, list):
+                reasons.append(f"{k}: {', '.join(str(x) for x in v)}")
+            else:
+                reasons.append(f"{k}: {v}")
+
+    if reasons:
+        return " | ".join(reasons)
+    return "FunPay отклонил сохранение лота без детальной ошибки."
+
+
+funpay_sync_lock = threading.Lock()
+funpay_last_status = {"status": "IDLE", "msg": "Модуль готов к работе", "timestamp": 0}
+
+
+def sync_and_verify_funpay_lot(session=None, cur_cfg=None):
+    """
+    ПОЛНЫЙ АВТОМАТ ВЫГРУЗКИ, ВЕРИФИКАЦИИ И ЗАЧИСТКИ FUNPAY:
+    1. Автоматически берет аккаунты из done.txt.
+    2. Выгружает на FunPay в поле secrets лота с автовыдачей.
+    3. ПРОВЕРЯЕТ: повторно запрашивает лот и верифицирует, что аккаунты РЕАЛЬНО там есть.
+    4. ЕСЛИ ДА — СНЕСЛО: аккаунты полностью вычищаются отовсюду с ПК (done.txt, RAM, pool, txt, stats).
+    5. ЕСЛИ НЕТ — ПРОВЕРЯЕТ ПОЧЕМУ НЕТ: глубокая диагностика причин сбоя, аккаунты сохраняются в done.txt!
+    """
+    global funpay_last_status
+
+    if not funpay_sync_lock.acquire(timeout=15):
+        return False, "Синхронизация с FunPay уже выполняется другим процессом."
+
+    try:
+        done_accounts = get_done_accounts()
+        if not done_accounts:
+            funpay_last_status = {"status": "OK", "msg": "Нет новых готовых аккаунтов в done.txt", "timestamp": time.time()}
+            return True, "done.txt пуст."
+
+        if cur_cfg is None:
+            cur_cfg = load_json(CONFIG_FILE, CFG)
+        cur_fp = cur_cfg.get("funpay", {})
+
+        if not cur_fp.get("enabled", False):
+            msg = (
+                f"[FUNPAY] [⚠️ ВНИМАНИЕ] В done.txt найдено {len(done_accounts)} готовых аккаунтов, "
+                f"но модуль FunPay выключен (\"enabled\": false) в config.json! "
+                f"Зачистка отменена, данные сохранены в done.txt."
+            )
+            print(msg)
+            funpay_last_status = {"status": "DISABLED", "msg": msg, "timestamp": time.time()}
+            return False, msg
+
+        golden_key = cur_fp.get("golden_key", "").strip()
+        if not golden_key or golden_key in ("ВАШ_GOLDEN_KEY", "YOUR_FUNPAY_GOLDEN_KEY"):
+            msg = (
+                f"[FUNPAY] [❌ ДИАГНОСТИКА: НЕ ЗАДАН GOLDEN_KEY] В config.json не указан golden_key! "
+                f"FunPay не может принять {len(done_accounts)} аккаунтов. "
+                f"Зачистка отменена, данные в безопасности в done.txt."
+            )
+            print(msg)
+            funpay_last_status = {"status": "ERROR_AUTH", "msg": msg, "timestamp": time.time()}
+            return False, msg
+
+        lot_id = cur_fp.get("lot_id")
+        if not lot_id or str(lot_id) in ("0", "12345678"):
+            msg = (
+                f"[FUNPAY] [❌ ДИАГНОСТИКА: НЕ ЗАДАН LOT_ID] В config.json не указан действительный ID лота! "
+                f"Зачистка отменена, {len(done_accounts)} аккаунтов в done.txt."
+            )
+            print(msg)
+            funpay_last_status = {"status": "ERROR_CONFIG", "msg": msg, "timestamp": time.time()}
+            return False, msg
+
+        # Создаем или используем существующую сессию
+        if session is None:
+            session = requests.Session()
+            session.headers.update({
+                "User-Agent": cur_fp.get(
+                    "user_agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            })
+        session.cookies.set("golden_key", golden_key, domain=".funpay.com")
+
+        # ШАГ 1: Проверка сессии и авторизации на FunPay
+        try:
+            r_auth = session.get("https://funpay.com/", timeout=10)
+            if r_auth.status_code in (403, 503):
+                msg = (
+                    f"[FUNPAY] [❌ ДИАГНОСТИКА: CLOUDFLARE БЛОК] FunPay вернул HTTP {r_auth.status_code}. "
+                    f"Защита Cloudflare заблокировала запрос. Зачистка отменена, аккаунты сохранены в done.txt."
+                )
+                print(msg)
+                funpay_last_status = {"status": "CLOUDFLARE", "msg": msg, "timestamp": time.time()}
+                return False, msg
+
+            if "/account/login" in r_auth.url or (
+                "logout" not in r_auth.text and "user-link" not in r_auth.text and "data-app-data" not in r_auth.text
+            ):
+                msg = (
+                    f"[FUNPAY] [❌ ДИАГНОСТИКА: СЕССИЯ НЕ АВТОРИЗОВАНА] Токен golden_key недействителен или протух! "
+                    f"FunPay требует входа в аккаунт. Обновите golden_key в config.json. "
+                    f"Зачистка отменена, {len(done_accounts)} аккаунтов в безопасности в done.txt."
+                )
+                print(msg)
+                funpay_last_status = {"status": "ERROR_TOKEN", "msg": msg, "timestamp": time.time()}
+                return False, msg
+        except Exception as e:
+            msg = f"[FUNPAY] [❌ ДИАГНОСТИКА: ОШИБКА СЕТИ] Не удалось связаться с FunPay: {e}. Зачистка отменена."
+            print(msg)
+            funpay_last_status = {"status": "ERROR_NET", "msg": msg, "timestamp": time.time()}
+            return False, msg
+
+        # ШАГ 2: Загрузка формы лота offerEdit
+        edit_url = f"https://funpay.com/lots/offerEdit?offer={lot_id}"
+        try:
+            r_edit = session.get(edit_url, timeout=10)
+        except Exception as e:
+            msg = f"[FUNPAY] [❌ ДИАГНОСТИКА: СЕТЕВОЙ ТАЙМАУТ] Не удалось открыть форму лота #{lot_id}: {e}"
+            print(msg)
+            funpay_last_status = {"status": "ERROR_NET", "msg": msg, "timestamp": time.time()}
+            return False, msg
+
+        if r_edit.status_code != 200:
+            if r_edit.status_code == 404:
+                msg = f"[FUNPAY] [❌ ДИАГНОСТИКА: ЛОТ НЕ НАЙДЕН] Лот #{lot_id} не существует (HTTP 404)! Проверьте lot_id."
+            elif r_edit.status_code == 403:
+                msg = f"[FUNPAY] [❌ ДИАГНОСТИКА: НЕТ ПРАВ] У вашего аккаунта FunPay нет прав на лот #{lot_id} (HTTP 403)!"
+            else:
+                msg = f"[FUNPAY] [❌ ДИАГНОСТИКА: СБОЙ СЕРВЕРА] FunPay вернул HTTP {r_edit.status_code} при открытии лота #{lot_id}."
+            print(msg)
+            funpay_last_status = {"status": "ERROR_LOT", "msg": msg, "timestamp": time.time()}
+            return False, msg
+
+        if "offerEdit" not in r_edit.url and "offerSave" not in r_edit.text:
+            msg = f"[FUNPAY] [❌ ДИАГНОСТИКА: РЕДИРЕКТ ЛОТА] FunPay перенаправил на страницу: {r_edit.url}. Возможно, лот заблокирован."
+            print(msg)
+            funpay_last_status = {"status": "ERROR_LOT", "msg": msg, "timestamp": time.time()}
+            return False, msg
+
+        parser = FunPayFormParser()
+        parser.feed(r_edit.text)
+        post_data = dict(parser.inputs)
+
+        form_csrf_val = post_data.get("csrf_token")
+        if not form_csrf_val:
+            m_csrf = re.search(r'name="csrf_token"\s+value="([^"]+)"', r_edit.text)
+            if m_csrf:
+                form_csrf_val = m_csrf.group(1)
+                post_data["csrf_token"] = form_csrf_val
+
+        category_url = cur_fp.get("category_url", "https://funpay.com/lots/925/")
+        m_node = re.search(r'/lots/(\d+)/?', category_url)
+        node_id = m_node.group(1) if m_node else post_data.get("node_id", "925")
+
+        # Расчет актуальной цены (демпинг)
+        min_price = float(cur_fp.get("min_price_usd", cur_fp.get("min_price", 2.0)))
+        undercut_step = float(cur_fp.get("undercut_step_usd", cur_fp.get("undercut_step", 0.01)))
+        target_price = min_price
+        try:
+            r_cat = session.get(category_url, timeout=8)
+            if r_cat.status_code == 200:
+                prices = []
+                for p_match in re.findall(r'data-price="([\d\.]+)"', r_cat.text):
+                    try:
+                        pv = float(p_match)
+                        if pv > 0.5:
+                            prices.append(pv)
+                    except ValueError:
+                        pass
+                if prices:
+                    target_price = max(min_price, round(min(prices) - undercut_step, 2))
+        except Exception:
+            pass
+
+        existing_secrets = post_data.get("secrets", "")
+        existing_lines = [l.strip() for l in existing_secrets.splitlines() if l.strip()]
+
+        # Объединяем секреты: сохраняем уже имеющиеся на FunPay и добавляем новые из done.txt
+        merged_secrets = list(existing_lines)
+        accounts_to_push = []
+        for acc in done_accounts:
+            u_acc, _ = extract_user_info_from_line(acc)
+            already_in_funpay = False
+            for ex in merged_secrets:
+                u_ex, _ = extract_user_info_from_line(ex)
+                if u_acc and u_ex and u_acc.lower() == u_ex.lower():
+                    already_in_funpay = True
+                    break
+                if acc.lower() == ex.lower():
+                    already_in_funpay = True
+                    break
+            if not already_in_funpay:
+                merged_secrets.append(acc)
+            accounts_to_push.append(acc)
+
+        total_count = len(merged_secrets)
+        post_data["offer_id"] = str(lot_id)
+        post_data["node_id"] = str(node_id)
+        post_data["price"] = str(target_price)
+        post_data["amount"] = str(total_count)
+        post_data["auto_delivery"] = "on"
+        post_data["secrets"] = "\n".join(merged_secrets)
+        if total_count > 0:
+            post_data["active"] = "on"
+        else:
+            post_data.pop("active", None)
+
+        # ШАГ 3: Отправка offerSave на FunPay
+        save_h = {"X-Requested-With": "XMLHttpRequest"}
+        if form_csrf_val:
+            save_h["X-CSRF-Token"] = form_csrf_val
+
+        print(
+            f"[FUNPAY] [↑] Заливка {len(accounts_to_push)} аккаунтов в лот #{lot_id} на FunPay... "
+            f"(Всего товаров в лоте: {total_count} шт., Цена: {target_price} {cur_fp.get('currency', 'USD')})"
+        )
+
+        try:
+            r_save = session.post(
+                "https://funpay.com/lots/offerSave",
+                data=post_data,
+                headers=save_h,
+                timeout=12
+            )
+        except Exception as e:
+            msg = f"[FUNPAY] [❌ ДИАГНОСТИКА: ТАЙМАУТ СОХРАНЕНИЯ] Ошибка при сохранении лота #{lot_id}: {e}. Зачистка отменена."
+            print(msg)
+            funpay_last_status = {"status": "ERROR_NET", "msg": msg, "timestamp": time.time()}
+            return False, msg
+
+        if r_save.status_code != 200:
+            err_diag = format_funpay_error(None, r_save.text)
+            msg = (
+                f"[FUNPAY] [❌ ДИАГНОСТИКА: СБОЙ offerSave (HTTP {r_save.status_code})] {err_diag}. "
+                f"Зачистка отменена, данные сохранены в done.txt."
+            )
+            print(msg)
+            funpay_last_status = {"status": "ERROR_SAVE", "msg": msg, "timestamp": time.time()}
+            return False, msg
+
+        res_json = None
+        try:
+            res_json = r_save.json()
+        except Exception:
+            err_diag = format_funpay_error(None, r_save.text)
+            msg = (
+                f"[FUNPAY] [❌ ДИАГНОСТИКА: НЕ JSON ОТВЕТ] Сервер вернул неожиданный ответ: {err_diag}. "
+                f"Зачистка отменена, аккаунты сохранены."
+            )
+            print(msg)
+            funpay_last_status = {"status": "ERROR_SAVE", "msg": msg, "timestamp": time.time()}
+            return False, msg
+
+        if not res_json.get("done"):
+            err_diag = format_funpay_error(res_json, r_save.text)
+            msg = (
+                f"[FUNPAY] [❌ ДИАГНОСТИКА: FUNPAY ОТКЛОНИЛ ВЫСТАВЛЕНИЕ ЛОТА] Причина: {err_diag}. "
+                f"Зачистка отменена, аккаунты сохранены в done.txt!"
+            )
+            print(msg)
+            funpay_last_status = {"status": "REJECTED", "msg": msg, "timestamp": time.time()}
+            return False, msg
+
+        # ШАГ 4: КОНТРОЛЬНАЯ ПРОВЕРКА (ВЕРИФИКАЦИЯ: ПРОВЕРИЛО ВЫСТАВИЛОСЬ ИЛИ НЕТ!)
+        print(f"[FUNPAY] [🔍] Контрольная проверка выставления лота #{lot_id} на сервере FunPay...")
+        time.sleep(1.0)  # Даем FunPay 1 секунду на сохранение записи в БД
+
+        try:
+            r_verify = session.get(f"https://funpay.com/lots/offerEdit?offer={lot_id}", timeout=10)
+            if r_verify.status_code != 200:
+                msg = (
+                    f"[FUNPAY] [⚠️ СБОЙ ПРОВЕРКИ] Не удалось загрузить лот для верификации (HTTP {r_verify.status_code})! "
+                    f"Зачистка отложена для безопасности данных."
+                )
+                print(msg)
+                funpay_last_status = {"status": "VERIFY_FAILED", "msg": msg, "timestamp": time.time()}
+                return False, msg
+
+            p_verify = FunPayFormParser()
+            p_verify.feed(r_verify.text)
+            verified_secrets_raw = p_verify.inputs.get("secrets", "")
+            verified_secrets_lines = [l.strip() for l in verified_secrets_raw.splitlines() if l.strip()]
+            verified_active = p_verify.inputs.get("active") == "on"
+            verified_amount = int(p_verify.inputs.get("amount", len(verified_secrets_lines)) or 0)
+
+            # Сверяем: каждый ли аккаунт РЕАЛЬНО появился в секретах
+            missing_accounts = []
+            confirmed_accounts = []
+            for acc in accounts_to_push:
+                u_name, _ = extract_user_info_from_line(acc)
+                found = False
+                for v_line in verified_secrets_lines:
+                    v_name, _ = extract_user_info_from_line(v_line)
+                    if u_name and v_name and u_name.lower() == v_name.lower():
+                        found = True
+                        break
+                    if acc.lower() == v_line.lower():
+                        found = True
+                        break
+                if found:
+                    confirmed_accounts.append(acc)
+                else:
+                    missing_accounts.append(acc)
+
+            if missing_accounts:
+                msg = (
+                    f"[FUNPAY] [❌ ДИАГНОСТИКА: АККАУНТЫ НЕ СОХРАНИЛИСЬ В СЕКРЕТАХ!] "
+                    f"FunPay ответил success, но при проверке лота #{lot_id} {len(missing_accounts)} "
+                    f"аккаунтов отсутствуют в поле secrets на сервере! "
+                    f"Не найдены: {[extract_user_info_from_line(a)[0] for a in missing_accounts]}. "
+                    f"Зачистка неполных аккаунтов отменена, они сохранены в done.txt!"
+                )
+                print(msg)
+                # Если часть всё же подтвердилась - зачищаем подтвержденные
+                if confirmed_accounts:
+                    print(f"[FUNPAY] [🗑️] Зачищаем {len(confirmed_accounts)} подтвержденных в FunPay аккаунтов...")
+                    for c_acc in confirmed_accounts:
+                        c_name, c_id = extract_user_info_from_line(c_acc)
+                        if c_name:
+                            delete_account_completely(c_name, user_id=c_id, also_done=True)
+                funpay_last_status = {"status": "PARTIAL", "msg": msg, "timestamp": time.time()}
+                return False, msg
+
+            if not verified_active and total_count > 0:
+                print(f"[FUNPAY] [⚠️ ПРЕДУПРЕЖДЕНИЕ] Аккаунты сохранены в секретах, но лот неактивен (active!=on). Проверьте настройки лота на FunPay.")
+
+            print(
+                f"[FUNPAY] [✓✓✓] ПРОВЕРКА ПРОЙДЕНА УСПЕШНО! "
+                f"Все {len(accounts_to_push)} аккаунтов реально выставлены на FunPay в лоте #{lot_id}! "
+                f"(В наличии: {verified_amount} шт., автовыдача: ВКЛ)"
+            )
+
+        except Exception as e:
+            msg = f"[FUNPAY] [⚠️ ОШИБКА ПРОВЕРКИ]: {e}. Зачистка отменена для защиты данных."
+            print(msg)
+            funpay_last_status = {"status": "VERIFY_ERROR", "msg": msg, "timestamp": time.time()}
+            return False, msg
+
+        # ШАГ 5: ЕСЛИ ДА — СНЕСЛО! (ТОТАЛЬНАЯ ЗАЧИСТКА СО ВСЕГО ПК)
+        print(f"[FUNPAY] [🗑️] Контрольная проверка пройдена: начинаем зачистку {len(accounts_to_push)} аккаунтов отовсюду с ПК...")
+        purged_count = 0
+        for d_line in accounts_to_push:
+            u_name, u_id = extract_user_info_from_line(d_line)
+            if u_name:
+                delete_account_completely(u_name, user_id=u_id, also_done=True)
+                purged_count += 1
+
+        success_msg = (
+            f"[FUNPAY] [✓✓✓] Зачищено {purged_count} аккаунтов отовсюду с ПК "
+            f"(из done.txt, accounts.txt, RAM, pool, CSV, воркспейсов и стат). "
+            f"Они теперь ТОЛЬКО на FunPay в лоте #{lot_id}!"
+        )
+        print(success_msg)
+        funpay_last_status = {"status": "SUCCESS", "msg": success_msg, "timestamp": time.time()}
+        return True, success_msg
+
+    finally:
+        funpay_sync_lock.release()
+
+
+def update_funpay_lot_price(session, cur_cfg):
+    """Фоновое обновление цены лота (демпинг) и проверка активности, когда в done.txt нет новых аккаунтов."""
+    cur_fp = cur_cfg.get("funpay", {})
+    lot_id = cur_fp.get("lot_id")
+    if not lot_id or str(lot_id) in ("0", "12345678"):
+        return
+
+    category_url = cur_fp.get("category_url", "https://funpay.com/lots/925/")
+    min_price = float(cur_fp.get("min_price_usd", cur_fp.get("min_price", 2.0)))
+    undercut_step = float(cur_fp.get("undercut_step_usd", cur_fp.get("undercut_step", 0.01)))
+
+    target_price = min_price
+    try:
+        r_cat = session.get(category_url, timeout=8)
+        if r_cat.status_code == 200:
+            prices = []
+            for p_match in re.findall(r'data-price="([\d\.]+)"', r_cat.text):
+                try:
+                    pv = float(p_match)
+                    if pv > 0.5:
+                        prices.append(pv)
+                except ValueError:
+                    pass
+            if prices:
+                target_price = max(min_price, round(min(prices) - undercut_step, 2))
+
+        edit_url = f"https://funpay.com/lots/offerEdit?offer={lot_id}"
+        r_edit = session.get(edit_url, timeout=10)
+        if r_edit.status_code == 200:
+            parser = FunPayFormParser()
+            parser.feed(r_edit.text)
+            post_data = dict(parser.inputs)
+
+            curr_price = float(post_data.get("price", 0) or 0)
+            if abs(curr_price - target_price) > 0.009:
+                form_csrf_val = post_data.get("csrf_token")
+                m_node = re.search(r'/lots/(\d+)/?', category_url)
+                node_id = m_node.group(1) if m_node else post_data.get("node_id", "925")
+
+                post_data["offer_id"] = str(lot_id)
+                post_data["node_id"] = str(node_id)
+                post_data["price"] = str(target_price)
+
+                save_h = {"X-Requested-With": "XMLHttpRequest"}
+                if form_csrf_val:
+                    save_h["X-CSRF-Token"] = form_csrf_val
+                r_save = session.post("https://funpay.com/lots/offerSave", data=post_data, headers=save_h, timeout=10)
+                if r_save.status_code == 200:
+                    try:
+                        rj = r_save.json()
+                        if rj.get("done"):
+                            print(f"[FUNPAY] [↑] Авто-демпинг цены лота #{lot_id}: {curr_price} -> {target_price} {cur_fp.get('currency', 'USD')}")
+                    except Exception:
+                        pass
+    except Exception:
+        pass
 
 
 # ==================== МОДУЛЬ FUNPAY (АВТОВЫДАЧА И АВТОПОДНЯТИЕ) ====================
 def funpay_worker():
-    print("[*] Модуль FunPay запущен...")
+    print("[*] Модуль FunPay запущен (авто-выгрузка, проверка и зачистка)...")
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -1987,30 +2438,18 @@ def funpay_worker():
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
             session.headers["User-Agent"] = user_agent
-            lot_id = cur_fp.get("lot_id")
             category_url = cur_fp.get("category_url", "https://funpay.com/lots/925/")
-            min_price = float(cur_fp.get("min_price_usd", cur_fp.get("min_price", 2.5)))
-            undercut_step = float(cur_fp.get("undercut_step_usd", cur_fp.get("undercut_step", 0.01)))
             check_interval = int(cur_fp.get("check_interval_sec", 40))
 
-            if not golden_key or golden_key == "ВАШ_GOLDEN_KEY":
+            if not golden_key or golden_key in ("ВАШ_GOLDEN_KEY", "YOUR_FUNPAY_GOLDEN_KEY"):
                 time.sleep(check_interval)
                 continue
 
             session.cookies.set("golden_key", golden_key, domain=".funpay.com")
 
-            # 1. Читаем готовые аккаунты из done.txt
-            done_accounts = get_done_accounts()
-
-            if len(done_accounts) != last_reported_count:
-                last_reported_count = len(done_accounts)
-                print(f"[FUNPAY] [★] В done.txt готово к продаже на FunPay: {len(done_accounts)} аккаунтов (100 lvl)")
-                if done_accounts:
-                    print(f"[FUNPAY] Последний готовый: {done_accounts[-1]}")
-
             now = time.time()
 
-            # 2. Вечный онлайн (каждые 45-60 секунд)
+            # 1. Вечный онлайн (каждые 45-60 секунд)
             if now - last_online_time > 45:
                 try:
                     resp_main = session.get("https://funpay.com/", timeout=10)
@@ -2042,7 +2481,7 @@ def funpay_worker():
                 except Exception:
                     pass
 
-            # 3. Авто-поднятие лотов (проверяем кулдаун)
+            # 2. Авто-поднятие лотов (проверяем кулдаун)
             if now >= next_raise_time:
                 try:
                     trade_url = category_url.rstrip("/") + "/trade"
@@ -2059,7 +2498,6 @@ def funpay_worker():
 
                         m_game = re.search(r'data-game="(\d+)"', r_trade.text)
                         game_id = m_game.group(1) if m_game else "141"
-
                         m_node = re.search(r'data-node="(\d+)"', r_trade.text)
                         node_id = m_node.group(1) if m_node else "925"
 
@@ -2085,92 +2523,19 @@ def funpay_worker():
                 except Exception:
                     next_raise_time = now + 600
 
-            # 4. Авто-выставление и обновление лота (с товарами из done.txt в поле secrets)
-            if lot_id and str(lot_id) not in ("0", "12345678"):
-                try:
-                    r_cat = session.get(category_url, timeout=10)
-                    lowest = min_price
-                    if r_cat.status_code == 200:
-                        prices = []
-                        for p_match in re.findall(r'data-price="([\d\.]+)"', r_cat.text):
-                            try:
-                                pv = float(p_match)
-                                if pv > 0.5:
-                                    prices.append(pv)
-                            except ValueError:
-                                pass
-                        if prices:
-                            lowest = min(prices)
-                    target_price = max(min_price, round(lowest - undercut_step, 2))
+            # 3. АВТО-ВЫГРУЗКА, ВЕРИФИКАЦИЯ И ЗАЧИСТКА АККАУНТОВ:
+            done_accounts = get_done_accounts()
+            if len(done_accounts) != last_reported_count:
+                last_reported_count = len(done_accounts)
+                if done_accounts:
+                    print(f"[FUNPAY] [★] Найдено {len(done_accounts)} готовых аккаунтов в done.txt! Запуск авто-заливки...")
 
-                    edit_url = f"https://funpay.com/lots/offerEdit?offer={lot_id}"
-                    r_edit = session.get(edit_url, timeout=10)
-                    if r_edit.status_code == 200:
-                        parser = FunPayFormParser()
-                        parser.feed(r_edit.text)
-                        post_data = dict(parser.inputs)
-
-                        form_csrf_val = post_data.get("csrf_token")
-                        if not form_csrf_val:
-                            m_csrf = re.search(r'name="csrf_token"\s+value="([^"]+)"', r_edit.text)
-                            if m_csrf:
-                                form_csrf_val = m_csrf.group(1)
-                                post_data["csrf_token"] = form_csrf_val
-
-                        m_node = re.search(r'/lots/(\d+)/?', category_url)
-                        node_id = m_node.group(1) if m_node else "925"
-
-                        existing_secrets = post_data.get("secrets", "")
-                        existing_lines = [l.strip() for l in existing_secrets.splitlines() if l.strip()]
-
-                        # Сохраняем уже имеющиеся в FunPay лоте секреты и мерджим с новыми готовыми из done.txt
-                        merged_secrets = list(existing_lines)
-                        accounts_to_purge = []
-                        for acc in done_accounts:
-                            if acc not in merged_secrets:
-                                merged_secrets.append(acc)
-                            accounts_to_purge.append(acc)
-
-                        total_count = len(merged_secrets)
-                        post_data["offer_id"] = str(lot_id)
-                        post_data["node_id"] = str(node_id)
-                        post_data["price"] = str(target_price)
-                        post_data["amount"] = str(total_count)
-                        post_data["auto_delivery"] = "on"
-                        post_data["secrets"] = "\n".join(merged_secrets)
-
-                        if total_count > 0:
-                            post_data["active"] = "on"
-                        else:
-                            post_data.pop("active", None)
-
-                        save_h = {"X-Requested-With": "XMLHttpRequest"}
-                        if form_csrf_val:
-                            save_h["X-CSRF-Token"] = form_csrf_val
-                        r_save = session.post(
-                            "https://funpay.com/lots/offerSave",
-                            data=post_data,
-                            headers=save_h,
-                            timeout=10
-                        )
-                        if r_save.status_code == 200:
-                            try:
-                                res_json = r_save.json()
-                                if res_json.get("done"):
-                                    print(f"[FUNPAY] [+] Лот #{lot_id} успешно синхронизирован с FunPay! Цена: {target_price} {cur_fp.get('currency', 'USD')} | В наличии: {total_count} шт. (Автовыдача обновлена)")
-                                    if accounts_to_purge:
-                                        print(f"[FUNPAY] [🗑️] Зачистка {len(accounts_to_purge)} выставленных аккаунтов со всех файлов ПК...")
-                                        for d_line in accounts_to_purge:
-                                            u_name, u_id = extract_user_info_from_line(d_line)
-                                            if u_name:
-                                                delete_account_completely(u_name, user_id=u_id, also_done=True)
-                                else:
-                                    err_msg = res_json.get("error") or res_json.get("errors")
-                                    print(f"[FUNPAY] [!] Ошибка сохранения лота #{lot_id}: {err_msg}")
-                            except Exception:
-                                pass
-                except Exception as e:
-                    print(f"[FUNPAY] [!] Ошибка обновления лота: {e}")
+            if done_accounts:
+                # ВЫКИНУЛО НА ФП -> ПРОВЕРИЛО ВЫСТАВИЛОСЬ ИЛИ НЕТ -> ЕСЛИ ДА СНЕСЛО -> ЕСЛИ НЕТ ДИАГНОСТИКА
+                sync_and_verify_funpay_lot(session=session, cur_cfg=cur_cfg)
+            else:
+                # Если готовых аккаунтов нет - просто держим цену актуальной (демпинг)
+                update_funpay_lot_price(session=session, cur_cfg=cur_cfg)
 
         except Exception as e:
             pass

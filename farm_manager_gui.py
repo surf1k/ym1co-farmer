@@ -627,8 +627,23 @@ class FarmManagerGUI:
             self.refresh_ui()
             dialog.destroy()
 
+        def do_sync_and_verify_now():
+            btn_sync.configure(state="disabled", text="⏳ Проверка и заливка на FunPay...")
+            def worker():
+                success, msg = farm_manager.sync_and_verify_funpay_lot()
+                if success:
+                    self.status_lbl.configure(text=f"✓ FunPay: {msg[:100]}")
+                else:
+                    self.status_lbl.configure(text=f"⚠️ FunPay: {msg[:100]}")
+                self.refresh_ui()
+                dialog.destroy()
+            import threading
+            threading.Thread(target=worker, daemon=True).start()
+
         if content:
             tk.Button(b_box, text="📋 Скопировать всё", bg="#3d2c18", fg=COLOR_BRIGHT_GOLD, font=self.font_sub, relief="flat", highlightthickness=1, highlightbackground=COLOR_GOLD, padx=10, pady=4, command=lambda: (copy_to_clipboard(self.root, content), self.status_lbl.configure(text="✓ Все готовые аккаунты скопированы!"))).pack(side=tk.LEFT, padx=(0, 6))
+            btn_sync = tk.Button(b_box, text="⚡ Выгрузить на FunPay и проверить", bg="#2b1f08", fg=COLOR_BRIGHT_GOLD, font=self.font_sub, relief="flat", highlightthickness=1, highlightbackground=COLOR_GOLD, padx=10, pady=4, command=do_sync_and_verify_now)
+            btn_sync.pack(side=tk.LEFT, padx=6)
             tk.Button(b_box, text="🗑️ Зачистить проданные отовсюду с ПК", bg="#3a1818", fg="#ff7777", activebackground="#552222", activeforeground="#ffffff", font=self.font_sub, relief="flat", highlightthickness=1, highlightbackground="#aa3333", padx=10, pady=4, command=do_purge_all_done).pack(side=tk.LEFT, padx=6)
 
         tk.Button(b_box, text="Закрыть", bg="#1c2d22", fg=COLOR_TEXT_MAIN, font=self.font_sub, relief="flat", padx=10, pady=4, command=dialog.destroy).pack(side=tk.RIGHT)
