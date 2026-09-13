@@ -10,6 +10,7 @@
   },
   "farm": {
     "roblox_executable_path": "",
+    "goal_mode": "both",
     "target_level": 100,
     "target_coins": 40000,
     "executor_workspace_path": "",

@@ -468,6 +468,8 @@ def get_farm_snapshot():
     vm = psutil.virtual_memory()
     cpu_percent = psutil.cpu_percent(interval=None)
 
+    cur_cfg = load_json(CONFIG_FILE, CFG)
+    farm_cfg = cur_cfg.get("farm", {})
     return {
         "farm_enabled": farm_enabled.is_set(),
         "bots": bots_data,
@@ -476,9 +478,10 @@ def get_farm_snapshot():
         "pool_count": pool_count,
         "total_coins": total_farmed_coins,
         "active_bots_count": len(bots_data),
-        "max_bots": CFG.get("hardware_limits", {}).get("absolute_max_bots_safety_cap", 50),
-        "target_level": CFG.get("farm", {}).get("target_level", 100),
-        "target_coins": CFG.get("farm", {}).get("target_coins", 40000),
+        "max_bots": cur_cfg.get("hardware_limits", {}).get("absolute_max_bots_safety_cap", 50),
+        "target_level": farm_cfg.get("target_level", 100),
+        "target_coins": farm_cfg.get("target_coins", 40000),
+        "goal_mode": farm_cfg.get("goal_mode", "both"),
         "ram_percent": vm.percent,
         "ram_used_gb": round((vm.total - vm.available) / (1024 ** 3), 1),
         "ram_total_gb": round(vm.total / (1024 ** 3), 1),
@@ -1563,14 +1566,29 @@ def farm_worker():
                 bot_coins = max(bot_coins, bot.get("max_coins", 0))
                 bot["max_coins"] = bot_coins
 
-                target_lvl = CFG.get("farm", {}).get("target_level", 100)
-                target_coins = CFG.get("farm", {}).get("target_coins", 40000)
+                cur_cfg = load_json(CONFIG_FILE, CFG)
+                farm_cfg = cur_cfg.get("farm", {})
+                target_lvl = farm_cfg.get("target_level", 100)
+                target_coins = farm_cfg.get("target_coins", 40000)
+                goal_mode = str(farm_cfg.get("goal_mode", "both")).strip().lower()
 
-                # Цель достигнута по УРОВНЮ и МОНЕТАМ!
-                goal_reached = (bot_lvl >= target_lvl and bot_coins >= target_coins) if target_coins > 0 else (bot_lvl >= target_lvl)
+                # Проверяем цель согласно настройке режима:
+                # 1. "level" / "только по лвл"
+                # 2. "coins" / "price" / "только по цене / монетам"
+                # 3. "both" / "оба" (уровень И монеты)
+                if goal_mode in ("level", "lvl", "уровень", "лвл", "только по лвл"):
+                    goal_reached = (bot_lvl >= target_lvl)
+                    goal_desc = f"{bot_lvl}/{target_lvl} lvl (Режим: Только по ЛВЛ)"
+                elif goal_mode in ("coins", "price", "money", "монеты", "цена", "только по цене", "только по монетам"):
+                    goal_reached = (bot_coins >= target_coins)
+                    goal_desc = f"{bot_coins:,}/{target_coins:,} coins (Режим: Только по ЦЕНЕ/МОНЕТАМ)"
+                else:  # "both", "оба"
+                    goal_reached = (bot_lvl >= target_lvl and bot_coins >= target_coins) if target_coins > 0 else (bot_lvl >= target_lvl)
+                    goal_desc = f"{bot_lvl}/{target_lvl} lvl & {bot_coins:,}/{target_coins:,} coins (Режим: ОБА)"
+
                 if goal_reached:
                     print(
-                        f"\n[FARM] [★] ГОТОВ К ПРОДАЖЕ: {bot['username']} | Lvl: {bot_lvl} | Coins: {bot_coins:,}"
+                        f"\n[FARM] [★] ГОТОВ К ПРОДАЖЕ: {bot['username']} | {goal_desc}"
                     )
                     clear_error(bot["username"])
 

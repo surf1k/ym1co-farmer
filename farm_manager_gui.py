@@ -228,8 +228,11 @@ class FarmManagerGUI:
         btn_cookies = tk.Button(right, text="⚡ АВТО-КУКИ ВСЕГО", bg="#2b1f08", fg=COLOR_BRIGHT_GOLD, activebackground="#3d3226", activeforeground="#ffffff", font=self.font_sub, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_GOLD, padx=10, pady=4, cursor="hand2", command=self.on_open_cookie_grabber)
         btn_cookies.pack(side=tk.LEFT, padx=6)
 
-        btn_done = tk.Button(right, text="★ Готовые (100 Lvl)", bg="#2b231b", fg=COLOR_BRIGHT_GOLD, activebackground="#3d3226", activeforeground="#ffffff", font=self.font_sub, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_GOLD, padx=10, pady=4, cursor="hand2", command=self.on_view_done)
+        btn_done = tk.Button(right, text="★ Готовые", bg="#2b231b", fg=COLOR_BRIGHT_GOLD, activebackground="#3d3226", activeforeground="#ffffff", font=self.font_sub, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_GOLD, padx=10, pady=4, cursor="hand2", command=self.on_view_done)
         btn_done.pack(side=tk.LEFT, padx=6)
+
+        self.btn_goal_mode = tk.Button(right, text="🎯 Цель: ОБА", bg="#182b22", fg=COLOR_EMERALD, activebackground="#2a4534", activeforeground="#ffffff", font=self.font_sub, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_EMERALD, padx=10, pady=4, cursor="hand2", command=self.on_change_goal_mode)
+        self.btn_goal_mode.pack(side=tk.LEFT, padx=6)
 
         btn_ref = tk.Button(right, text="🔄", bg="#1c2d22", fg=COLOR_TEXT_MAIN, font=self.font_sub, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, padx=8, pady=4, cursor="hand2", command=self.refresh_ui)
         btn_ref.pack(side=tk.LEFT, padx=6)
@@ -245,7 +248,7 @@ class FarmManagerGUI:
         self.cards_data = [
             ("Статус системы", "АКТИВНА", "● Процессы запущены"),
             ("Боты в MM2", "0 / 50", "Очередь пула: 0"),
-            ("Готово (100 Lvl)", "0 шт.", "Готовы в done.txt"),
+            ("Готово к продаже", "0 шт.", "Режим: ОБА"),
             ("Всего монет MM2", "🪙 0", "Суммарный баланс"),
             ("ОЗУ / Память", "0%", "0 / 0 GB"),
         ]
@@ -357,6 +360,28 @@ class FarmManagerGUI:
             self.metric_widgets[1][0].configure(text=f"{snap['active_bots_count']} / {snap['max_bots']}")
             self.metric_widgets[1][1].configure(text=f"Очередь пула: {snap['pool_count']}")
             self.metric_widgets[2][0].configure(text=f"{snap['done_count']} шт.")
+
+            g_mode = snap.get("goal_mode", "both").lower()
+            if g_mode in ("level", "lvl", "уровень", "лвл"):
+                mode_btn_txt = "🎯 Цель: Только Lvl"
+                mode_sub = "Режим: Только Lvl"
+                mode_bg = "#182b3d"
+                mode_fg = "#77bbff"
+            elif g_mode in ("coins", "price", "money", "монеты", "цена"):
+                mode_btn_txt = "🎯 Цель: Только Цена"
+                mode_sub = "Режим: Только Цена"
+                mode_bg = "#2b2b18"
+                mode_fg = COLOR_BRIGHT_GOLD
+            else:
+                mode_btn_txt = "🎯 Цель: ОБА"
+                mode_sub = "Режим: Lvl + Цена"
+                mode_bg = "#182b22"
+                mode_fg = COLOR_EMERALD
+
+            self.metric_widgets[2][1].configure(text=mode_sub)
+            if hasattr(self, "btn_goal_mode"):
+                self.btn_goal_mode.configure(text=mode_btn_txt, bg=mode_bg, fg=mode_fg)
+
             self.metric_widgets[3][0].configure(text=f"🪙 {snap['total_coins']:,}")
             self.metric_widgets[4][0].configure(text=f"{snap['ram_percent']}%")
             self.metric_widgets[4][1].configure(text=f"{snap['ram_used_gb']} / {snap['ram_total_gb']} GB")
@@ -365,7 +390,7 @@ class FarmManagerGUI:
             self.render_errors(snap.get("errors", []))
 
             # Рендер карточек активных ботов (in-place)
-            self.render_bots(snap.get("bots", []), target_lvl=snap.get("target_level", 100), target_coins=snap.get("target_coins", 40000))
+            self.render_bots(snap.get("bots", []), target_lvl=snap.get("target_level", 100), target_coins=snap.get("target_coins", 40000), goal_mode=g_mode)
 
         except Exception as e:
             print(f"[GUI REFRESH ERROR]: {e}")
@@ -448,7 +473,7 @@ class FarmManagerGUI:
                 self.error_card_widgets[uname]["frame"].destroy()
                 del self.error_card_widgets[uname]
 
-    def render_bots(self, bots, target_lvl=100, target_coins=40000):
+    def render_bots(self, bots, target_lvl=100, target_coins=40000, goal_mode="both"):
         """Плавный in-place рендер ботов (без пересоздания виджетов и потери скролла)."""
         if not bots:
             if not self.empty_bots_label:
@@ -474,7 +499,13 @@ class FarmManagerGUI:
             coins = bot.get("coins", 0)
             lvl_frac = min(1.0, max(0.0, lvl / float(target_lvl))) if target_lvl > 0 else 1.0
             coin_frac = min(1.0, max(0.0, coins / float(target_coins))) if target_coins > 0 else 1.0
-            total_frac = min(lvl_frac, coin_frac) if target_coins > 0 else lvl_frac
+            g_mode = (goal_mode or "both").lower()
+            if g_mode in ("level", "lvl", "уровень", "лвл"):
+                total_frac = lvl_frac
+            elif g_mode in ("coins", "price", "money", "монеты", "цена"):
+                total_frac = coin_frac
+            else:
+                total_frac = min(lvl_frac, coin_frac) if target_coins > 0 else lvl_frac
             st = (bot.get("status") or "FARMING").upper()
             st_color = COLOR_ERROR_TEXT if ("KICK" in st or "ERROR" in st) else (COLOR_GOLD if ("WAIT" in st or "LOBBY" in st) else COLOR_EMERALD)
 
@@ -573,6 +604,106 @@ class FarmManagerGUI:
 
         tk.Button(btn_box, text="Отмена", bg="#1c2d22", fg=COLOR_TEXT_MAIN, font=self.font_sub, relief="flat", padx=10, pady=4, command=dialog.destroy).pack(side=tk.RIGHT, padx=6)
         tk.Button(btn_box, text="Добавить в пул", bg="#3d2c18", fg=COLOR_BRIGHT_GOLD, font=self.font_sub, relief="flat", highlightthickness=1, highlightbackground=COLOR_GOLD, padx=12, pady=4, command=save).pack(side=tk.RIGHT, padx=6)
+
+    def on_change_goal_mode(self):
+        cur_cfg = farm_manager.load_json(farm_manager.CONFIG_FILE, farm_manager.CFG)
+        farm_cfg = cur_cfg.get("farm", {})
+        cur_mode = str(farm_cfg.get("goal_mode", "both")).lower()
+        cur_lvl = farm_cfg.get("target_level", 100)
+        cur_coins = farm_cfg.get("target_coins", 40000)
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("🎯 Настройка критериев готовности аккаунтов")
+        dialog.geometry("560x470")
+        dialog.configure(bg=COLOR_SURFACE)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="🎯 КРИТЕРИИ ГОТОВНОСТИ АККАУНТА", bg=COLOR_SURFACE, fg=COLOR_BRIGHT_GOLD, font=self.font_title).pack(pady=(14, 4))
+        tk.Label(dialog, text="Выберите, когда аккаунт считается готовым и отправляется на FunPay:", bg=COLOR_SURFACE, fg=COLOR_TEXT_MUTED, font=self.font_small).pack(pady=(0, 10))
+
+        initial_val = "both"
+        if cur_mode in ("level", "lvl", "уровень", "лвл"):
+            initial_val = "level"
+        elif cur_mode in ("coins", "price", "money", "монеты", "цена"):
+            initial_val = "coins"
+
+        mode_var = tk.StringVar(value=initial_val)
+
+        opt_frame = tk.Frame(dialog, bg=COLOR_SURFACE)
+        opt_frame.pack(fill=tk.X, padx=20, pady=4)
+
+        # Вариант 1: ОБА (Уровень + Монеты)
+        f_both = tk.Frame(opt_frame, bg="#0e1711", bd=1, relief="solid", highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, padx=12, pady=8)
+        f_both.pack(fill=tk.X, pady=4)
+        r_both = tk.Radiobutton(f_both, text="🌟 ОБА УСЛОВИЯ (Уровень + Цена/Монеты) [Рекомендуется]", variable=mode_var, value="both", bg="#0e1711", fg=COLOR_EMERALD, activebackground="#0e1711", activeforeground="#ffffff", selectcolor="#050a07", font=self.font_header)
+        r_both.pack(anchor="w")
+        tk.Label(f_both, text="Аккаунт выставляется на продажу ТОЛЬКО когда достигнуты И уровень, И целевые монеты.", bg="#0e1711", fg=COLOR_TEXT_MUTED, font=self.font_small).pack(anchor="w", padx=24)
+
+        # Вариант 2: Только по цене / монетам
+        f_coins = tk.Frame(opt_frame, bg="#17170e", bd=1, relief="solid", highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, padx=12, pady=8)
+        f_coins.pack(fill=tk.X, pady=4)
+        r_coins = tk.Radiobutton(f_coins, text="🪙 ТОЛЬКО ПО ЦЕНЕ / МОНЕТАМ", variable=mode_var, value="coins", bg="#17170e", fg=COLOR_BRIGHT_GOLD, activebackground="#17170e", activeforeground="#ffffff", selectcolor="#0a0a05", font=self.font_header)
+        r_coins.pack(anchor="w")
+        tk.Label(f_coins, text="Аккаунт выставляется на продажу сразу по достижении целевой суммы монет (уровень любой).", bg="#17170e", fg=COLOR_TEXT_MUTED, font=self.font_small).pack(anchor="w", padx=24)
+
+        # Вариант 3: Только по уровню (Lvl)
+        f_lvl = tk.Frame(opt_frame, bg="#0e141a", bd=1, relief="solid", highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, padx=12, pady=8)
+        f_lvl.pack(fill=tk.X, pady=4)
+        r_lvl = tk.Radiobutton(f_lvl, text="⭐ ТОЛЬКО ПО УРОВНЮ (LVL)", variable=mode_var, value="level", bg="#0e141a", fg="#77bbff", activebackground="#0e141a", activeforeground="#ffffff", selectcolor="#05080c", font=self.font_header)
+        r_lvl.pack(anchor="w")
+        tk.Label(f_lvl, text="Аккаунт выставляется на продажу сразу по достижении целевого уровня (монеты любые).", bg="#0e141a", fg=COLOR_TEXT_MUTED, font=self.font_small).pack(anchor="w", padx=24)
+
+        # Поля ввода целевых значений
+        val_frame = tk.Frame(dialog, bg=COLOR_SURFACE)
+        val_frame.pack(fill=tk.X, padx=20, pady=10)
+
+        tk.Label(val_frame, text="Целевой уровень (Lvl):", bg=COLOR_SURFACE, fg=COLOR_TEXT_MAIN, font=self.font_sub).grid(row=0, column=0, sticky="w", pady=4)
+        ent_lvl = tk.Entry(val_frame, bg="#080f0a", fg=COLOR_TEXT_MAIN, font=self.font_sub, insertbackground="#ffffff", width=14)
+        ent_lvl.grid(row=0, column=1, sticky="w", padx=10, pady=4)
+        ent_lvl.insert(0, str(cur_lvl))
+
+        tk.Label(val_frame, text="Целевая цена/монеты (Coins):", bg=COLOR_SURFACE, fg=COLOR_TEXT_MAIN, font=self.font_sub).grid(row=1, column=0, sticky="w", pady=4)
+        ent_coins = tk.Entry(val_frame, bg="#080f0a", fg=COLOR_BRIGHT_GOLD, font=self.font_sub, insertbackground="#ffffff", width=14)
+        ent_coins.grid(row=1, column=1, sticky="w", padx=10, pady=4)
+        ent_coins.insert(0, str(cur_coins))
+
+        def save_mode():
+            try:
+                new_lvl = int(ent_lvl.get().strip() or 100)
+                new_coins = int(ent_coins.get().strip().replace(",", "").replace(" ", "") or 40000)
+            except ValueError:
+                from tkinter import messagebox
+                messagebox.showerror("Ошибка", "Введите корректные целые числа для уровня и монет.")
+                return
+
+            chosen_mode = mode_var.get()
+            cur_cfg = farm_manager.load_json(farm_manager.CONFIG_FILE, farm_manager.CFG)
+            if "farm" not in cur_cfg:
+                cur_cfg["farm"] = {}
+            cur_cfg["farm"]["goal_mode"] = chosen_mode
+            cur_cfg["farm"]["target_level"] = new_lvl
+            cur_cfg["farm"]["target_coins"] = new_coins
+
+            farm_manager.save_json(farm_manager.CONFIG_FILE, cur_cfg)
+            if "farm" in farm_manager.CFG:
+                farm_manager.CFG["farm"]["goal_mode"] = chosen_mode
+                farm_manager.CFG["farm"]["target_level"] = new_lvl
+                farm_manager.CFG["farm"]["target_coins"] = new_coins
+
+            mode_titles = {
+                "both": "Оба условия (Lvl + Монеты)",
+                "coins": "Только по цене (Монеты)",
+                "level": "Только по уровню (Lvl)"
+            }
+            self.status_lbl.configure(text=f"✓ Режим готовности сохранен: {mode_titles.get(chosen_mode, chosen_mode)} (Lvl: {new_lvl}, Coins: {new_coins:,})")
+            self.refresh_ui()
+            dialog.destroy()
+
+        b_bar = tk.Frame(dialog, bg=COLOR_SURFACE)
+        b_bar.pack(fill=tk.X, padx=20, pady=10)
+        tk.Button(b_bar, text="Отмена", bg="#1c2d22", fg=COLOR_TEXT_MAIN, font=self.font_sub, relief="flat", padx=12, pady=4, command=dialog.destroy).pack(side=tk.RIGHT, padx=6)
+        tk.Button(b_bar, text="💾 Сохранить настройки", bg="#3d2c18", fg=COLOR_BRIGHT_GOLD, activebackground="#553a1a", activeforeground="#ffffff", font=self.font_sub, relief="flat", highlightthickness=1, highlightbackground=COLOR_GOLD, padx=14, pady=4, command=save_mode).pack(side=tk.RIGHT, padx=6)
 
     def on_view_done(self):
         dialog = tk.Toplevel(self.root)
