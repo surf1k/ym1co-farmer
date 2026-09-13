@@ -910,12 +910,20 @@ def find_roblox_executable():
 
 def sync_accounts_into_pool():
     """Синхронизирует аккаунты из:
+    0. Real Storage (%LOCALAPPDATA%/Real — авто-куки на полном автомате)
     1. Roblox Account Manager (AccountData.json)
     2. accounts.txt
     3. accounts_pool.txt
     Гарантирует, что все незавершенные аккаунты (не 100 lvl) находятся в очереди пула.
     """
+    try:
+        import cookie_grabber
+        cookie_grabber.scan_real_storage_for_all_accounts()
+    except Exception:
+        pass
+
     done_users = set()
+
     if os.path.exists(DONE_FILE):
         try:
             with open(DONE_FILE, "r", encoding="utf-8") as df:
@@ -1155,6 +1163,20 @@ def get_distinct_public_server(place_id, used_jobs):
 
 def launch_roblox_instance(bot_entry):
     ticket = get_auth_ticket(bot_entry["cookie"])
+    if not ticket and bot_entry.get("password"):
+        print(f"[FARM] [*] Куки {bot_entry['username']} истекла. Авто-получение новой куки через Playwright...")
+        try:
+            import cookie_grabber
+            ok, new_c, new_uid, _ = cookie_grabber.login_and_get_cookie(bot_entry["username"], bot_entry["password"], headless=True)
+            if ok and new_c:
+                bot_entry["cookie"] = new_c
+                if new_uid:
+                    bot_entry["userId"] = new_uid
+                ticket = get_auth_ticket(new_c)
+                print(f"[FARM] [✓] Новая куки для {bot_entry['username']} получена и активирована!")
+        except Exception:
+            pass
+
     if not ticket:
         err_msg = "Ошибка авторизации: не удалось получить auth-тикет (Бан, капча или истекшая сессия)"
         print(

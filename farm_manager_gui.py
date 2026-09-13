@@ -225,7 +225,7 @@ class FarmManagerGUI:
         btn_add = tk.Button(right, text="➕ Добавить Аккаунт", bg="#1c2d22", fg=COLOR_TEXT_MAIN, activebackground="#2a4534", activeforeground="#ffffff", font=self.font_sub, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_EMERALD, padx=10, pady=4, cursor="hand2", command=self.on_add_account)
         btn_add.pack(side=tk.LEFT, padx=6)
 
-        btn_cookies = tk.Button(right, text="🍪 Авто-Куки (Real)", bg="#1e2836", fg="#82aaff", activebackground="#27374d", activeforeground="#ffffff", font=self.font_sub, relief="flat", bd=1, highlightthickness=1, highlightbackground="#82aaff", padx=10, pady=4, cursor="hand2", command=self.on_open_cookie_grabber)
+        btn_cookies = tk.Button(right, text="⚡ АВТО-КУКИ ВСЕГО", bg="#2b1f08", fg=COLOR_BRIGHT_GOLD, activebackground="#3d3226", activeforeground="#ffffff", font=self.font_sub, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_GOLD, padx=10, pady=4, cursor="hand2", command=self.on_open_cookie_grabber)
         btn_cookies.pack(side=tk.LEFT, padx=6)
 
         btn_done = tk.Button(right, text="★ Готовые (100 Lvl)", bg="#2b231b", fg=COLOR_BRIGHT_GOLD, activebackground="#3d3226", activeforeground="#ffffff", font=self.font_sub, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_GOLD, padx=10, pady=4, cursor="hand2", command=self.on_view_done)
@@ -607,29 +607,73 @@ class FarmManagerGUI:
 
     def on_open_cookie_grabber(self):
         dialog = tk.Toplevel(self.root)
-        dialog.title("Авто-получение куки .ROBLOSECURITY (Real / BloxGen)")
-        dialog.geometry("720x580")
+        dialog.title("⚡ АВТО-КУКИ ВСЕГО (Real / BloxGen / Farm)")
+        dialog.geometry("760x640")
         dialog.configure(bg=COLOR_SURFACE)
         dialog.transient(self.root)
         dialog.grab_set()
 
-        tk.Label(dialog, text="🍪 Автоматический вход и получение куки", bg=COLOR_SURFACE, fg="#82aaff", font=self.font_title).pack(pady=(12, 4))
-        tk.Label(dialog, text="Вставьте пары логин:пароль из BloxGen/Real, либо нажмите авто-поиск в Real:", bg=COLOR_SURFACE, fg=COLOR_TEXT_MUTED, font=self.font_small).pack(pady=2)
+        tk.Label(dialog, text="⚡ АВТО-КУКИ ВСЕГО — Real / BloxGen", bg=COLOR_SURFACE, fg=COLOR_BRIGHT_GOLD, font=self.font_title).pack(pady=(12, 4))
+        tk.Label(dialog, text="Полный автомат: авто-сбор куки из Real, сопоставление с txt.txt и добавление в ферму:", bg=COLOR_SURFACE, fg=COLOR_TEXT_MUTED, font=self.font_small).pack(pady=2)
+
+        # Главная кнопка "АВТОКУКИ ВСЕГО"
+        def run_auto_everything():
+            btn_auto_all.configure(state="disabled", text="⏳ Идёт сканирование и авто-сбор куки...")
+            btn_start.configure(state="disabled")
+            btn_close.configure(state="disabled")
+
+            def worker():
+                try:
+                    import cookie_grabber
+                    def gui_log(msg):
+                        log_out.insert(tk.END, msg + "\n")
+                        log_out.see(tk.END)
+                    added = cookie_grabber.auto_grab_everything(log_fn=gui_log)
+                    lbl_log.configure(text=f"✓ Завершено! Добавлено в ферму: {added} аккаунтов с куки.")
+                    self.refresh_ui()
+                except Exception as ex:
+                    log_out.insert(tk.END, f"\n❌ Ошибка: {ex}\n")
+                finally:
+                    btn_auto_all.configure(state="normal", text="⚡ АВТО-КУКИ ВСЕГО (Сканировать Real + Файлы + Авто-добавление)")
+                    btn_start.configure(state="normal")
+                    btn_close.configure(state="normal")
+
+            import threading
+            threading.Thread(target=worker, daemon=True).start()
+
+        btn_auto_all = tk.Button(
+            dialog,
+            text="⚡ АВТО-КУКИ ВСЕГО (Сканировать Real + Файлы + Авто-добавление)",
+            bg="#2b1f08",
+            fg=COLOR_BRIGHT_GOLD,
+            activebackground="#3d3226",
+            activeforeground="#ffffff",
+            font=self.font_header,
+            relief="flat",
+            bd=2,
+            highlightthickness=2,
+            highlightbackground=COLOR_GOLD,
+            padx=16,
+            pady=8,
+            cursor="hand2",
+            command=run_auto_everything
+        )
+        btn_auto_all.pack(fill=tk.X, padx=16, pady=(6, 8))
 
         scan_bar = tk.Frame(dialog, bg=COLOR_SURFACE)
-        scan_bar.pack(fill=tk.X, padx=16, pady=6)
+        scan_bar.pack(fill=tk.X, padx=16, pady=4)
 
         def do_scan_real():
             try:
                 import cookie_grabber
-                found = cookie_grabber.scan_real_local_storage()
+                found = cookie_grabber.scan_real_storage_for_all_accounts()
                 if found:
                     txt_in.delete("1.0", tk.END)
                     for acc in found:
-                        txt_in.insert(tk.END, f"{acc['username']}:{acc['password']}\n")
+                        txt_in.insert(tk.END, f"{acc['username']}:{acc.get('password','')}\n")
                     lbl_log.configure(text=f"✓ Найдено {len(found)} аккаунтов в хранилище Real!")
                 else:
-                    lbl_log.configure(text="ℹ️ В папке Real аккаунты не найдены. Вставьте логин:пароль вручную.")
+                    lbl_log.configure(text="ℹ️ В хранилище Real аккаунты не найдены. Вставьте логин:пароль вручную.")
             except Exception as ex:
                 lbl_log.configure(text=f"Ошибка сканирования: {ex}")
 
@@ -643,19 +687,19 @@ class FarmManagerGUI:
                     if parsed:
                         txt_in.delete("1.0", tk.END)
                         for acc in parsed:
-                            txt_in.insert(tk.END, f"{acc['username']}:{acc['password']}\n")
+                            txt_in.insert(tk.END, f"{acc['username']}:{acc.get('password','')}\n")
                         lbl_log.configure(text=f"✓ Загружено {len(parsed)} аккаунтов из файла!")
                 except Exception as ex:
                     lbl_log.configure(text=f"Ошибка загрузки файла: {ex}")
 
-        tk.Button(scan_bar, text="🔍 Авто-поиск в Real (%localappdata%)", bg="#1b2838", fg="#82aaff", font=self.font_small_bold, relief="flat", bd=1, highlightthickness=1, highlightbackground="#82aaff", padx=8, pady=3, cursor="hand2", command=do_scan_real).pack(side=tk.LEFT, padx=4)
-        tk.Button(scan_bar, text="📂 Загрузить файл (txt/csv)", bg="#1c2d22", fg=COLOR_TEXT_MAIN, font=self.font_small_bold, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, padx=8, pady=3, cursor="hand2", command=load_txt_file).pack(side=tk.LEFT, padx=4)
+        tk.Button(scan_bar, text="🔍 Поиск в Real", bg="#1b2838", fg="#82aaff", font=self.font_small_bold, relief="flat", bd=1, highlightthickness=1, highlightbackground="#82aaff", padx=8, pady=3, cursor="hand2", command=do_scan_real).pack(side=tk.LEFT, padx=4)
+        tk.Button(scan_bar, text="📂 Загрузить файл", bg="#1c2d22", fg=COLOR_TEXT_MAIN, font=self.font_small_bold, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, padx=8, pady=3, cursor="hand2", command=load_txt_file).pack(side=tk.LEFT, padx=4)
 
-        txt_in = tk.Text(dialog, bg="#080f0a", fg=COLOR_TEXT_MAIN, font=self.font_mono_log, height=9, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER)
+        txt_in = tk.Text(dialog, bg="#080f0a", fg=COLOR_TEXT_MAIN, font=self.font_mono_log, height=6, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER)
         txt_in.pack(fill=tk.X, padx=16, pady=4)
-        txt_in.insert(tk.END, "# Вставьте аккаунты в формате:\n# Activexstorm5502:SYPYlrPj8xuRh\n# или логин пароль через пробел\n")
+        txt_in.insert(tk.END, "# Ручной ввод (логин:пароль или логин пароль):\n")
 
-        lbl_log = tk.Label(dialog, text="Готов к работе. Нажмите 'Начать получение куки'.", bg=COLOR_SURFACE, fg=COLOR_EMERALD, font=self.font_small)
+        lbl_log = tk.Label(dialog, text="Готов к работе. Нажмите '⚡ АВТО-КУКИ ВСЕГО'.", bg=COLOR_SURFACE, fg=COLOR_EMERALD, font=self.font_small)
         lbl_log.pack(anchor="w", padx=16, pady=2)
 
         log_out = tk.Text(dialog, bg="#040805", fg="#98bb6c", font=self.font_mono_log, height=7, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER)

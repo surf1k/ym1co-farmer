@@ -1,10 +1,10 @@
 @echo off
 chcp 65001 >nul
-title ym1co farmer - Авто-получение Куки (Real / BloxGen)
+title ym1co farmer - АВТО-КУКИ ВСЕГО (Real / BloxGen)
 cd /d "%~dp0"
 
 echo =====================================================================
-echo    👑 ym1co farmer - Автоматическое получение .ROBLOSECURITY куки
+echo    👑 ym1co farmer - АВТОКУКИ ВСЕГО (Real / BloxGen / Farm)
 echo =====================================================================
 echo.
 
