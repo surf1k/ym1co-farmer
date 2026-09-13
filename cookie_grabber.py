@@ -277,6 +277,17 @@ def parse_raw_accounts_file(file_path: str) -> List[Dict]:
                     accounts.append({"username": u, "password": p, "cookie": "", "userId": 0, "source": file_path})
                     continue
 
+            # Формат: Real CSV (generatedAt,username,robloxId,...)
+            if "," in line and ":" not in line:
+                c_parts = [p.strip() for p in line.split(",")]
+                if len(c_parts) >= 3 and c_parts[2].isdigit():
+                    u = c_parts[1]
+                    uid = int(c_parts[2])
+                    if u and u.lower() not in seen:
+                        seen.add(u.lower())
+                        accounts.append({"username": u, "password": "", "cookie": "", "userId": uid, "source": file_path})
+                        continue
+
             # Разделитель пробел или таб
             ws_parts = line.split()
             if len(ws_parts) >= 2:
@@ -287,6 +298,58 @@ def parse_raw_accounts_file(file_path: str) -> List[Dict]:
                     accounts.append({"username": u, "password": p, "cookie": "", "userId": 0, "source": file_path})
 
     return accounts
+
+
+def convert_real_csv_to_farm_format(csv_path: str = TXT_CSV_FILE, output_path: str = ACCOUNTS_FILE) -> List[str]:
+    """
+    Конвертирует файл экспорта Real CSV (txt.txt) в наш рабочий формат:
+    username:password:cookie:userId
+    """
+    if not os.path.exists(csv_path):
+        return []
+
+    existing_map = {}
+    if os.path.exists(output_path):
+        try:
+            with open(output_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split(":", 2)
+                    if len(parts) >= 2:
+                        u = parts[0].strip()
+                        p = parts[1].strip()
+                        rest = parts[2].strip() if len(parts) > 2 else ""
+                        c = rest
+                        uid = 0
+                        if ":" in rest:
+                            rparts = rest.rsplit(":", 1)
+                            if rparts[1].strip().isdigit():
+                                c = rparts[0].strip()
+                                uid = int(rparts[1].strip())
+                        existing_map[u.lower()] = {"password": p, "cookie": c, "userId": uid}
+        except Exception:
+            pass
+
+    converted = []
+    with open(csv_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("generatedAt,"):
+                continue
+            if "," in line and ":" not in line:
+                pts = [p.strip() for p in line.split(",")]
+                if len(pts) >= 3 and pts[2].isdigit():
+                    u = pts[1]
+                    uid = int(pts[2])
+                    known = existing_map.get(u.lower(), {})
+                    p = known.get("password", "")
+                    c = known.get("cookie", "")
+                    actual_uid = uid or known.get("userId", 0)
+                    converted.append(f"{u}:{p}:{c}:{actual_uid}")
+
+    return converted
 
 
 def login_and_get_cookie(username: str, password: str, headless: bool = True) -> Tuple[bool, Optional[str], Optional[int], str]:

@@ -838,15 +838,31 @@ def get_auth_ticket(cookie):
 
 def parse_account_line(line):
     line = line.strip()
-    if not line:
+    if not line or line.startswith("#"):
         return None
 
-    # Форматы:
+    # Поддержка CSV экспорта от Real / BloxGen:
+    # generatedAt,username,robloxId,type,cost,region,createdAt,source,flagged
+    if line.startswith("generatedAt,"):
+        return None
+    if "," in line and ":" not in line:
+        c_parts = [p.strip() for p in line.split(",")]
+        if len(c_parts) >= 3 and c_parts[2].isdigit():
+            u = c_parts[1]
+            uid = int(c_parts[2])
+            return {
+                "username": u,
+                "password": "",
+                "cookie": "",
+                "userId": uid,
+            }
+
+    # Форматы с двоеточием:
     # 1) username:password:cookie:userid
     # 2) username:password:cookie
     # 3) username:cookie
-    # Куки Roblox всегда содержит '_|WARNING:-DO-NOT-SHARE-THIS...' с двоеточием,
-    # поэтому обычный split(":") без ограничения длины ломает куки!
+    # 4) username:::userid
+    # 5) username:password
     parts = line.split(":", 2)
     if len(parts) < 2:
         return None
@@ -869,7 +885,7 @@ def parse_account_line(line):
             uid = int(r_parts[1].strip())
 
     cookie = cookie.strip().strip('"').strip("'")
-    if not u or not cookie:
+    if not u:
         return None
 
     return {
@@ -1162,9 +1178,10 @@ def get_distinct_public_server(place_id, used_jobs):
 
 
 def launch_roblox_instance(bot_entry):
-    ticket = get_auth_ticket(bot_entry["cookie"])
+    cookie = bot_entry.get("cookie", "").strip()
+    ticket = get_auth_ticket(cookie) if cookie else None
     if not ticket and bot_entry.get("password"):
-        print(f"[FARM] [*] Куки {bot_entry['username']} истекла. Авто-получение новой куки через Playwright...")
+        print(f"[FARM] [*] Куки {bot_entry['username']} истекла или отсутствует. Авто-получение новой куки через Playwright...")
         try:
             import cookie_grabber
             ok, new_c, new_uid, _ = cookie_grabber.login_and_get_cookie(bot_entry["username"], bot_entry["password"], headless=True)
@@ -1178,9 +1195,9 @@ def launch_roblox_instance(bot_entry):
             pass
 
     if not ticket:
-        err_msg = "Ошибка авторизации: не удалось получить auth-тикет (Бан, капча или истекшая сессия)"
+        err_msg = "Ошибка авторизации: нет куки или не удалось получить auth-тикет (Запустите '⚡ АВТО-КУКИ ВСЕГО')"
         print(
-            f"[FARM] [-] Запуск отменён: не удалось авторизовать {bot_entry['username']}. Пароль: {bot_entry.get('password')}"
+            f"[FARM] [-] Запуск отменён: у {bot_entry['username']} отсутствует валидная куки. Запустите '⚡ АВТО-КУКИ ВСЕГО'!"
         )
         record_failure(bot_entry["username"], bot_entry.get("password", ""), err_msg, bot_entry.get("userId"), threshold=5)
         return None
