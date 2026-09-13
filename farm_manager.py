@@ -908,21 +908,91 @@ def can_spawn_more_bots():
 
 
 # ==================== МОМЕНТАЛЬНАЯ БЛОКИРОВКА ПРИ ВСТРЕЧЕ (ИДЕАЛЬНЫЙ CSRF) ====================
-def sync_bot_ids(user_id):
-    ids = load_json(BOT_IDS_FILE, [])
-    if user_id not in ids:
-        ids.append(user_id)
-        save_json(BOT_IDS_FILE, ids)
+def get_all_known_bot_credentials():
+    """Собирает карту {UserId: cookie} и {Username_lower: cookie} со всех файлов пула и аккаунтов."""
+    cookie_by_id = {}
+    cookie_by_name = {}
+    all_ids = set()
+    all_names = set()
 
-    ws_path = get_workspace_path()
-    if ws_path and os.path.exists(ws_path):
-        target = os.path.join(ws_path, "bot_ids.json")
-        with file_lock:
-            try:
-                with open(target, "w", encoding="utf-8") as f:
-                    json.dump(ids, f)
-            except Exception as e:
-                print(f"[!] Ошибка записи bot_ids.json: {e}")
+    files = [ACTIVE_POOL_FILE, POOL_ACCOUNTS_FILE, ACCOUNTS_FILE, "txt.txt"]
+    for fn in files:
+        if not os.path.exists(fn):
+            continue
+        try:
+            if fn.endswith(".json"):
+                data = load_json(fn, [])
+                for b in data:
+                    uid = b.get("userId")
+                    c = b.get("cookie")
+                    u = (b.get("username") or "").strip().lower()
+                    if uid:
+                        all_ids.add(int(uid))
+                        if c: cookie_by_id[int(uid)] = c
+                    if u:
+                        all_names.add(u)
+                        if c: cookie_by_name[u] = c
+            else:
+                with open(fn, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        parts = line.split(":")
+                        if len(parts) >= 2:
+                            u = parts[0].strip().lower()
+                            if u: all_names.add(u)
+                            c = ""
+                            uid = 0
+                            for pt in parts[1:]:
+                                pt = pt.strip()
+                                if "_|WARNING:" in pt:
+                                    c = pt
+                                elif pt.isdigit() and len(pt) >= 6:
+                                    uid = int(pt)
+                            if uid:
+                                all_ids.add(uid)
+                                if c: cookie_by_id[uid] = c
+                            if u and c:
+                                cookie_by_name[u] = c
+        except Exception:
+            pass
+
+    return cookie_by_id, cookie_by_name, sorted(list(all_ids)), sorted(list(all_names))
+
+
+def sync_bot_ids(user_id=None):
+    """Синхронизирует bot_ids.json и bot_names.json во все возможные воркспейсы всех экзекуторов."""
+    _, _, all_ids, all_names = get_all_known_bot_credentials()
+    existing_ids = load_json(BOT_IDS_FILE, [])
+    for eid in existing_ids:
+        if eid not in all_ids:
+            all_ids.append(eid)
+    if user_id and user_id not in all_ids:
+        all_ids.append(user_id)
+
+    save_json(BOT_IDS_FILE, all_ids)
+    save_json("bot_names.json", all_names)
+
+    ws_targets = set()
+    ws_main = get_workspace_path()
+    if ws_main:
+        ws_targets.add(ws_main)
+    for c in get_candidate_workspace_paths():
+        if os.path.isdir(c):
+            ws_targets.add(c)
+
+    for ws_path in ws_targets:
+        try:
+            target_ids = os.path.join(ws_path, "bot_ids.json")
+            target_names = os.path.join(ws_path, "bot_names.json")
+            with file_lock:
+                with open(target_ids, "w", encoding="utf-8") as f:
+                    json.dump(all_ids, f)
+                with open(target_names, "w", encoding="utf-8") as f:
+                    json.dump(all_names, f)
+        except Exception as e:
+            pass
 
 
 def block_user(cookie, target_id):
@@ -958,6 +1028,9 @@ def block_queue_worker():
 
     while True:
         try:
+            # Периодически обновляем списки ботов для всех воркспейсов
+            sync_bot_ids()
+
             if os.path.exists(queue_file):
                 with file_lock:
                     with open(queue_file, "r", encoding="utf-8") as f:
@@ -966,13 +1039,7 @@ def block_queue_worker():
                     open(queue_file, "w").close()
 
                 if lines:
-                    pool = load_json(ACTIVE_POOL_FILE, [])
-                    # Карта: UserId -> Cookie
-                    cookie_map = {
-                        b.get("userId"): b.get("cookie")
-                        for b in pool
-                        if b.get("userId")
-                    }
+                    cookie_by_id, cookie_by_name, _, _ = get_all_known_bot_credentials()
 
                     for line in lines:
                         line = line.strip()
@@ -982,17 +1049,19 @@ def block_queue_worker():
                             req = json.loads(line)
                             me_id = req.get("me")
                             target_id = req.get("target")
+                            me_name = (req.get("meName") or "").strip().lower()
+                            target_name = (req.get("targetName") or "").strip().lower()
 
-                            cookie_me = cookie_map.get(me_id)
-                            cookie_target = cookie_map.get(target_id)
+                            cookie_me = cookie_by_id.get(me_id) or cookie_by_name.get(me_name)
+                            cookie_target = cookie_by_id.get(target_id) or cookie_by_name.get(target_name)
 
-                            # Взаимный бан
-                            if cookie_me:
+                            # Взаимный бан через официальный API Roblox
+                            if cookie_me and target_id:
                                 if block_user(cookie_me, target_id):
-                                    print(f"[БАН] Бот {me_id} забанил {target_id}!")
-                            if cookie_target:
+                                    print(f"[БАН] Бот {me_name or me_id} забанил {target_name or target_id}!")
+                            if cookie_target and me_id:
                                 if block_user(cookie_target, me_id):
-                                    print(f"[БАН] Бот {target_id} забанил {me_id}!")
+                                    print(f"[БАН] Бот {target_name or target_id} забанил {me_name or me_id}!")
                         except Exception as e:
                             pass
         except Exception:

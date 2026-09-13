@@ -979,6 +979,12 @@ local function isOtherBot(p)
             return true
         end
     end
+    if isfile and isfile("bot_names.json") then
+        local ok, nlist = pcall(function() return HttpService:JSONDecode(readfile("bot_names.json")) end)
+        if ok and type(nlist) == "table" and table.find(nlist, p.Name:lower()) then
+            return true
+        end
+    end
     return false
 end
 
@@ -1165,13 +1171,13 @@ local lowPlayerCountSince = 0
 
 local function checkBotCollision()
     if not Settings.AutoServerHopOnBotCollision then return end
-    -- Не хопаем в первые 60 секунд после входа в игру
-    if (tick() - scriptLoadTime) < 60 then return end
+    -- Не хопаем в первые 25 секунд после входа в игру (пока персонаж грузится)
+    if (tick() - scriptLoadTime) < 25 then return end
 
     for _, p in ipairs(Players:GetPlayers()) do
         if isOtherBot(p) then
             local lastHandled = handledCollisionBots[p.UserId] or 0
-            if (tick() - lastHandled) < 60 then
+            if (tick() - lastHandled) < 40 then
                 return
             end
             handledCollisionBots[p.UserId] = tick()
@@ -1208,18 +1214,26 @@ local function checkBotCollision()
                 end
             end)
 
-            -- Переход только если бот пробыл на сервере хотя бы 90с (защита от Passport/Arkose)
+            -- Переход только если бот пробыл на сервере хотя бы 30с (защита от Passport/Arkose)
             if LocalPlayer.UserId > p.UserId then
-                if (tick() - scriptLoadTime) >= 90 and (tick() - lastLocalHopTime) >= 90 then
-                    notifyUser("Anti-Collision", "Обнаружен бот " .. p.Name .. "! Плавный уход через 10-15с...", 3)
-                    task.wait(math.random(10, 15))
+                if (tick() - scriptLoadTime) >= 30 and (tick() - lastLocalHopTime) >= 30 then
+                    notifyUser("Anti-Collision", "Обнаружен бот " .. p.Name .. "! Плавный уход через 3-5с...", 3)
+                    task.wait(math.random(3, 5))
                     hopToPopulatedServer(false)
                     return
                 else
-                    notifyUser("Anti-Collision", "Бот " .. p.Name .. " рядом, но мы недавно зашли. Доигрываем раунд.", 3)
+                    notifyUser("Anti-Collision", "Бот " .. p.Name .. " рядом. Ожидание завершения загрузки для ухода...", 3)
+                    task.spawn(function()
+                        while (tick() - scriptLoadTime) < 30 do
+                            task.wait(1)
+                        end
+                        task.wait(math.random(2, 4))
+                        hopToPopulatedServer(false)
+                    end)
+                    return
                 end
             else
-                notifyUser("Anti-Collision", "Бот " .. p.Name .. " обнаружен. Я остаюсь.", 3)
+                notifyUser("Anti-Collision", "Бот " .. p.Name .. " обнаружен. Я остаюсь на сервере.", 3)
             end
         end
     end
