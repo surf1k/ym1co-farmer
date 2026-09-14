@@ -1313,10 +1313,11 @@ local cachedUndergroundSpot = nil
 local function getUndergroundCFrame(root)
     if cachedUndergroundSpot then return cachedUndergroundSpot end
     if root then
-        cachedUndergroundSpot = CFrame.new(root.Position.X, root.Position.Y - 18, root.Position.Z)
+        -- Безопасная позиция над игроками / под потолком (+16 studs), исключающая кик "Invalid position"
+        cachedUndergroundSpot = CFrame.new(root.Position.X, root.Position.Y + 16, root.Position.Z)
         return cachedUndergroundSpot
     end
-    return CFrame.new(0, -15, 0)
+    return CFrame.new(0, 20, 0)
 end
 
 local function getKiteCFrame(root, murdererPos, desiredDist)

@@ -33,6 +33,25 @@ FUNPAY_UPLOADED_FILE = "funpay_uploaded.json"
 FUNPAY_SOLD_FILE = "funpay_sold.txt"
 MM2_STATS_FILE = "mm2_farm_stats.txt"
 
+# ==================== ВСТРОЕННЫЙ MULTI-ROBLOX (MUTEX BYPASS) ====================
+_multi_roblox_mutex = None
+_multi_roblox_event = None
+
+
+def init_multi_roblox():
+    global _multi_roblox_mutex, _multi_roblox_event
+    if sys.platform == "win32":
+        try:
+            kernel32 = ctypes.windll.kernel32
+            # Создаем и удерживаем системные мьютексы и события ДО запуска клиентов Roblox
+            _multi_roblox_mutex = kernel32.CreateMutexW(None, True, "ROBLOX_singletonMutex")
+            _multi_roblox_event = kernel32.CreateEventW(None, True, False, "ROBLOX_singletonEvent")
+            print("[MULTI] [✓] Встроенный Multi-Roblox активирован (ROBLOX_singletonMutex захвачен).")
+        except Exception as e:
+            print(f"[MULTI] [!] Предупреждение Multi-Roblox: {e}")
+
+init_multi_roblox()
+
 file_lock = threading.Lock()
 farm_enabled = threading.Event()
 farm_enabled.set()
