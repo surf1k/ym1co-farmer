@@ -433,6 +433,30 @@ def get_existing_usernames(target_file: str = ACCOUNTS_FILE) -> Set[str]:
         except Exception:
             pass
 
+    # Проверяем funpay_uploaded.json (выгруженные на FunPay лот)
+    if os.path.exists("funpay_uploaded.json"):
+        try:
+            with open("funpay_uploaded.json", "r", encoding="utf-8") as f:
+                up_accs = json.load(f)
+                for ua in up_accs:
+                    if ua and isinstance(ua, str):
+                        existing.add(ua.strip().lower())
+        except Exception:
+            pass
+
+    # Проверяем funpay_sold.txt (история проданных/залитых аккаунтов)
+    if os.path.exists("funpay_sold.txt"):
+        try:
+            with open("funpay_sold.txt", "r", encoding="utf-8") as f:
+                for l in f:
+                    m = re.search(r'name:\s*([^\s,|]+)', l, re.IGNORECASE)
+                    if m:
+                        existing.add(m.group(1).strip().lower())
+                    elif ":" in l:
+                        existing.add(l.split(":")[0].strip().lower())
+        except Exception:
+            pass
+
     # Проверяем done.txt
     if os.path.exists("done.txt"):
         try:

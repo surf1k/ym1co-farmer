@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 
+from datetime import datetime
 import psutil
 import requests
 from html.parser import HTMLParser
@@ -30,10 +31,24 @@ IGNORED_ACCOUNTS_FILE = "ignored_accounts.json"
 BLOCKED_PAIRS_FILE = "blocked_pairs.json"
 FUNPAY_UPLOADED_FILE = "funpay_uploaded.json"
 FUNPAY_SOLD_FILE = "funpay_sold.txt"
+MM2_STATS_FILE = "mm2_farm_stats.txt"
 
 file_lock = threading.Lock()
 farm_enabled = threading.Event()
 farm_enabled.set()
+
+
+def kill_pid(pid):
+    """Принудительно и надежно завершает процесс по PID."""
+    if not pid:
+        return
+    try:
+        pid_int = int(pid)
+        if psutil.pid_exists(pid_int):
+            p = psutil.Process(pid_int)
+            p.kill()
+    except Exception:
+        pass
 
 
 def load_config():
@@ -301,43 +316,54 @@ def delete_account_completely(username: str, user_id=None, also_done: bool = Fal
         print(f"[PURGE] Ошибка удаления из RAM: {e}")
 
     # 7. Вырезаем из mm2_farm_stats.txt
-    for s_file in get_candidate_paths(MM2_STATS_FILE):
-        if os.path.exists(s_file):
-            try:
-                with file_lock:
-                    with open(s_file, "r", encoding="utf-8") as f:
-                        lines = [l for l in f if l.strip()]
-                    new_lines = [l for l in lines if not re.search(rf"\bUser:\s*{re.escape(username)}\b", l, re.IGNORECASE)]
-                    with open(s_file, "w", encoding="utf-8") as f:
-                        for l in new_lines:
-                            f.write(l.strip() + "\n")
-            except Exception:
-                pass
+    try:
+        for s_file in get_candidate_paths(MM2_STATS_FILE):
+            if os.path.exists(s_file):
+                try:
+                    with file_lock:
+                        with open(s_file, "r", encoding="utf-8") as f:
+                            lines = [l for l in f if l.strip()]
+                        new_lines = [l for l in lines if not re.search(rf"\bUser:\s*{re.escape(username)}\b", l, re.IGNORECASE)]
+                        with open(s_file, "w", encoding="utf-8") as f:
+                            for l in new_lines:
+                                f.write(l.strip() + "\n")
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[PURGE] Ошибка очистки {MM2_STATS_FILE}: {e}")
 
     # 8. Удаляем из bot_ids.json
-    for b_file in get_candidate_paths("bot_ids.json"):
-        if os.path.exists(b_file):
-            try:
-                b_ids = load_json(b_file, {})
-                changed = False
-                for k in list(b_ids.keys()):
-                    if k.lower() == u_lower or (uid_str and str(b_ids[k]).strip() == uid_str):
-                        del b_ids[k]
-                        changed = True
-                if changed:
-                    save_json(b_file, b_ids)
-            except Exception:
-                pass
+    try:
+        for b_file in get_candidate_paths("bot_ids.json"):
+            if os.path.exists(b_file):
+                try:
+                    b_ids = load_json(b_file, {})
+                    changed = False
+                    for k in list(b_ids.keys()):
+                        if k.lower() == u_lower or (uid_str and str(b_ids[k]).strip() == uid_str):
+                            del b_ids[k]
+                            changed = True
+                    if changed:
+                        save_json(b_file, b_ids)
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[PURGE] Ошибка очистки bot_ids.json: {e}")
 
     # 9. Удаляем локальные файлы статистики из воркспейсов Real и Xeno
     try:
         cand_ws = [
-            find_executor_workspace_path(),
+            get_workspace_path(),
             os.path.expandvars(r"%LOCALAPPDATA%\Real\workspace"),
             os.path.expandvars(r"%LOCALAPPDATA%\Xeno\workspace"),
             r"C:\Users\DDDen\AppData\Local\Real\workspace",
             r"C:\Users\DDDen\AppData\Local\Xeno\workspace",
         ]
+        try:
+            cand_ws.extend(get_candidate_workspace_paths())
+        except Exception:
+            pass
+
         for ws_dir in set(cand_ws):
             if not ws_dir or not os.path.isdir(ws_dir):
                 continue
@@ -350,8 +376,8 @@ def delete_account_completely(username: str, user_id=None, also_done: bool = Fal
                         os.remove(f_path)
                     except Exception:
                         pass
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[PURGE] Ошибка очистки файлов статистики: {e}")
 
     # 10. Завершаем активный процесс игры (если бот ещё в игре) и убираем из active_pool.json
     try:
@@ -372,23 +398,26 @@ def delete_account_completely(username: str, user_id=None, also_done: bool = Fal
 
     # 11. Если also_done=True (аккаунт залит на FunPay) — удаляем и из done.txt!
     if also_done:
-        for d_file in get_candidate_paths(DONE_FILE):
-            if os.path.exists(d_file):
-                try:
-                    with file_lock:
-                        with open(d_file, "r", encoding="utf-8") as f:
-                            lines = [l for l in f if l.strip()]
-                        new_lines = [
-                            l for l in lines
-                            if not re.search(rf"\bname:\s*{re.escape(username)}\b", l, re.IGNORECASE)
-                            and not l.lower().startswith(u_lower + ":")
-                            and not ("," in l and len(l.split(",")) >= 2 and l.split(",")[1].strip().lower() == u_lower)
-                        ]
-                        with open(d_file, "w", encoding="utf-8") as f:
-                            for l in new_lines:
-                                f.write(l.strip() + "\n")
-                except Exception:
-                    pass
+        try:
+            for d_file in get_candidate_paths(DONE_FILE):
+                if os.path.exists(d_file):
+                    try:
+                        with file_lock:
+                            with open(d_file, "r", encoding="utf-8") as f:
+                                lines = [l for l in f if l.strip()]
+                            new_lines = [
+                                l for l in lines
+                                if not re.search(rf"\bname:\s*{re.escape(username)}\b", l, re.IGNORECASE)
+                                and not l.lower().startswith(u_lower + ":")
+                                and not ("," in l and len(l.split(",")) >= 2 and l.split(",")[1].strip().lower() == u_lower)
+                            ]
+                            with open(d_file, "w", encoding="utf-8") as f:
+                                for l in new_lines:
+                                    f.write(l.strip() + "\n")
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"[PURGE] Ошибка очистки {DONE_FILE}: {e}")
 
     print(f"[PURGE] [✓] Аккаунт {username} успешно удалён отовсюду с ПК!")
 
@@ -1875,18 +1904,45 @@ def farm_worker():
                     )
                     clear_error(bot["username"])
 
+                    # 1. Мгновенно убиваем процесс игры бота
+                    pid = bot.get("pid")
+                    if pid:
+                        kill_pid(pid)
+
+                    # 2. Мгновенно удаляем из active_pool.json в памяти и на диске
+                    try:
+                        active_pool = [
+                            b for b in active_pool
+                            if b.get("username", "").strip().lower() != bot.get("username", "").strip().lower()
+                        ]
+                        save_json(ACTIVE_POOL_FILE, active_pool)
+                    except Exception:
+                        pass
+
+                    # 3. Сохраняем в done.txt (без дубликатов)
                     with file_lock:
-                        with open(DONE_FILE, "a", encoding="utf-8") as df:
-                            # Формат строго для FunPay: name: nick | pass: password (без лишних запятых и пометок, чтобы покупатели не путались)
-                            df.write(
-                                f"name: {bot['username']} | pass: {bot['password']}\n"
-                            )
+                        already_in_done = False
+                        if os.path.exists(DONE_FILE):
+                            try:
+                                with open(DONE_FILE, "r", encoding="utf-8") as df:
+                                    for l in df:
+                                        if bot["username"].strip().lower() in l.lower():
+                                            already_in_done = True
+                                            break
+                            except Exception:
+                                pass
+                        if not already_in_done:
+                            with open(DONE_FILE, "a", encoding="utf-8") as df:
+                                # Формат строго для FunPay: name: nick | pass: password
+                                df.write(
+                                    f"name: {bot['username']} | pass: {bot['password']}\n"
+                                )
 
-                    # Полная зачистка аккаунта отовсюду с ПК (из пула, accounts.txt, txt.txt, RAM, стат), кроме done.txt
+                    # 4. Полная зачистка аккаунта отовсюду с ПК (из пула, accounts.txt, txt.txt, RAM, стат), кроме done.txt
                     delete_account_completely(bot["username"], user_id=user_id, also_done=False)
-                    print(f"[FARM] [-] Аккаунт {bot['username']} зачищен из пула и отправлен в {DONE_FILE}. Слот свободен.")
+                    print(f"[FARM] [-] Аккаунт {bot['username']} зачищен из пула и сохранен в {DONE_FILE}. Слот свободен.")
 
-                    # АВТОМАТИЧЕСКАЯ ЗАЛИВКА НА FUNPAY: ВЫКИНУЛО -> ПРОВЕРИЛО -> ЕСЛИ ДА СНЕСЛО -> ЕСЛИ НЕТ ДИАГНОСТИКА
+                    # 5. АВТОМАТИЧЕСКАЯ ЗАЛИВКА НА FUNPAY: ВЫКИНУЛО -> ПРОВЕРИЛО -> ЕСЛИ ДА СНЕСЛО -> ЕСЛИ НЕТ ДИАГНОСТИКА
                     print(f"[FARM] [⚡] Запуск мгновенной авто-выгрузки готового аккаунта {bot['username']} на FunPay...")
                     threading.Thread(target=sync_and_verify_funpay_lot, daemon=True).start()
                     continue
@@ -2253,8 +2309,7 @@ def get_done_accounts():
         os.path.join(os.getcwd(), DONE_FILE),
     ]))
     uploaded_history = [str(x).strip().lower() for x in load_json(FUNPAY_UPLOADED_FILE, [])]
-    ignored = [str(x).strip().lower() for x in load_json(IGNORED_ACCOUNTS_FILE, [])]
-    blacklisted = set(uploaded_history + ignored)
+    blacklisted = set(uploaded_history)
 
     all_lines = []
     for c in candidates:
@@ -2476,8 +2531,7 @@ def sync_and_verify_funpay_lot(session=None, cur_cfg=None):
         # Объединяем секреты: сохраняем уже имеющиеся на FunPay и добавляем новые из done.txt
         merged_secrets = list(existing_lines)
         uploaded_history = [str(x).strip().lower() for x in load_json(FUNPAY_UPLOADED_FILE, [])]
-        ignored = [str(x).strip().lower() for x in load_json(IGNORED_ACCOUNTS_FILE, [])]
-        blacklisted = set(uploaded_history + ignored)
+        blacklisted = set(uploaded_history)
 
         accounts_to_push = []
         for acc in done_accounts:
