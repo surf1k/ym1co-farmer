@@ -485,7 +485,36 @@ local function isInLobby(root)
     return dist < 60
 end
 
--- Определение ролей
+-- ==================== ОПРЕДЕЛЕНИЕ РОЛЕЙ И ОРУЖИЯ ====================
+local function isGunItem(item)
+    if not (item and item:IsA("Tool")) then return false end
+    local n = item.Name:lower()
+    if n:find("gun") or n:find("revolver") or n:find("pistol") or n:find("luger") or n:find("blaster") or n:find("laser") then
+        return true
+    end
+    if item:FindFirstChild("GunServer") or item:FindFirstChild("GunLocal") or item:FindFirstChild("Shoot") or item:FindFirstChild("GunDrop") then
+        return true
+    end
+    return false
+end
+
+local function isKnifeItem(item)
+    if not (item and item:IsA("Tool")) then return false end
+    if isGunItem(item) then return false end
+    local n = item.Name:lower()
+    if n:find("radio") or n:find("boombox") or n:find("toy") or n:find("emote") or n:find("candy") or n:find("potion") or n:find("pizza") or n:find("drink") or n:find("radar") then
+        return false
+    end
+    if n:find("knife") or n:find("blade") or n:find("dagger") or n:find("sword") or n:find("axe") or n:find("scythe") or n:find("cutter") or n:find("cleaver") or n:find("bat") or n:find("saw") then
+        return true
+    end
+    if item:FindFirstChild("KnifeServer") or item:FindFirstChild("KnifeLocal") or item:FindFirstChild("Slash") then
+        return true
+    end
+    -- Любой неизвестный Tool в MM2, который не радио/игрушка и не пистолет - оружие маньяка
+    return true
+end
+
 local cachedRoles = { murderer = nil, sheriff = nil, myRole = "Innocent" }
 local lastRolesCheck = 0
 
@@ -503,19 +532,10 @@ local function getRoles()
         local function scanContainer(container)
             if not container then return end
             for _, item in ipairs(container:GetChildren()) do
-                if item:IsA("Tool") then
-                    local n = item.Name:lower()
-                    if n:find("gun") or n:find("revolver") or n:find("pistol") or n:find("luger") or n:find("blaster") or n:find("laser") then
-                        hasGun = true
-                    elseif n:find("knife") or n:find("blade") or n:find("dagger") or n:find("sword") or n:find("axe") or n:find("scythe") or n:find("cutter") or n:find("cleaver") then
-                        hasKnife = true
-                    elseif not (n:find("radio") or n:find("boombox") or n:find("toy") or n:find("emote") or n:find("candy") or n:find("potion") or n:find("pizza") or n:find("drink")) then
-                        if item:FindFirstChild("GunServer") or item:FindFirstChild("GunLocal") or item:FindFirstChild("Shoot") then
-                            hasGun = true
-                        else
-                            hasKnife = true
-                        end
-                    end
+                if isGunItem(item) then
+                    hasGun = true
+                elseif isKnifeItem(item) then
+                    hasKnife = true
                 end
             end
         end
@@ -1387,18 +1407,6 @@ local function executeCombatWin(root, char, roles)
     if not hum or hum.Health <= 0 then return end
 
     -- 1. ЕСЛИ У НАС ЕСТЬ ПИСТОЛЕТ (ШЕРИФ / ПОДОБРАННЫЙ ПИСТОЛЕТ)
-    local function isGunItem(item)
-        if not (item and item:IsA("Tool")) then return false end
-        local n = item.Name:lower()
-        if n:find("gun") or n:find("revolver") or n:find("pistol") or n:find("luger") or n:find("blaster") or n:find("laser") then
-            return true
-        end
-        if item:FindFirstChild("GunServer") or item:FindFirstChild("GunLocal") or item:FindFirstChild("Shoot") or item:FindFirstChild("GunDrop") then
-            return true
-        end
-        return false
-    end
-
     local gun = nil
     for _, item in ipairs(char:GetChildren()) do
         if isGunItem(item) then
@@ -1435,14 +1443,14 @@ local function executeCombatWin(root, char, roles)
             for _, p in ipairs(Players:GetPlayers()) do
                 if p ~= LocalPlayer and p.Character then
                     for _, item in ipairs(p.Character:GetChildren()) do
-                        if item:IsA("Tool") and (item.Name:lower():find("knife") or item.Name:lower():find("blade") or item.Name:lower():find("dagger") or item.Name:lower():find("sword")) then
+                        if isKnifeItem(item) then
                             targetMurderer = p
                             break
                         end
                     end
                     if not targetMurderer and p:FindFirstChild("Backpack") then
                         for _, item in ipairs(p.Backpack:GetChildren()) do
-                            if item:IsA("Tool") and (item.Name:lower():find("knife") or item.Name:lower():find("blade") or item.Name:lower():find("dagger") or item.Name:lower():find("sword")) then
+                            if isKnifeItem(item) then
                                 targetMurderer = p
                                 break
                             end
@@ -1577,7 +1585,7 @@ local function executeCombatWin(root, char, roles)
     -- 2. ЕСЛИ МЫ МАНЬЯК С НОЖОМ
     local knife = nil
     for _, item in ipairs(char:GetChildren()) do
-        if item:IsA("Tool") and not (item.Name:lower():find("gun") or item.Name:lower():find("revolver") or item.Name:lower():find("pistol") or item.Name:lower():find("luger") or item.Name:lower():find("blaster") or item.Name:lower():find("laser")) then
+        if isKnifeItem(item) then
             knife = item
             break
         end
@@ -1586,7 +1594,7 @@ local function executeCombatWin(root, char, roles)
         local bp = LocalPlayer:FindFirstChild("Backpack")
         if bp then
             for _, item in ipairs(bp:GetChildren()) do
-                if item:IsA("Tool") and not (item.Name:lower():find("gun") or item.Name:lower():find("revolver") or item.Name:lower():find("pistol") or item.Name:lower():find("luger") or item.Name:lower():find("blaster") or item.Name:lower():find("laser")) then
+                if isKnifeItem(item) then
                     knife = item
                     hum:EquipTool(knife)
                     task.wait(0.1)
@@ -1671,6 +1679,50 @@ local function farmStep()
 
     local roles = getRoles()
     local currentCoins = getCoinBagCount()
+    local bp = LocalPlayer:FindFirstChild("Backpack")
+
+    -- 0. АБСОЛЮТНЫЙ ПРИОРИТЕТ: ЕСЛИ У НАС ЕСТЬ ПИСТОЛЕТ (ШЕРИФ ИЛИ ПОДОБРАЛИ ПИСТОЛЕТ)
+    -- Мгновенно убиваем маньяка и забираем победу (дает 1000-1500 XP за победу шерифа/героя)!
+    local myGun = nil
+    for _, item in ipairs(char:GetChildren()) do
+        if isGunItem(item) then myGun = item; break end
+    end
+    if not myGun and bp then
+        for _, item in ipairs(bp:GetChildren()) do
+            if isGunItem(item) then
+                myGun = item
+                hum:EquipTool(myGun)
+                break
+            end
+        end
+    end
+
+    if myGun or roles.myRole == "Sheriff" then
+        if currentTween then currentTween:Cancel(); currentTween = nil end
+        root.AssemblyLinearVelocity = Vector3.zero
+        executeCombatWin(root, char, roles)
+        task.wait(0.3)
+        return
+    end
+
+    -- Если на карте выпал пистолет (Sheriff погиб) -> Срочно летим и подбираем его!
+    if Settings.AutoGrabGun then
+        local gun = getGunDrop()
+        if gun and gun:IsDescendantOf(Workspace) then
+            local gp = gun:IsA("BasePart") and gun or gun:FindFirstChildWhichIsA("BasePart", true)
+            if gp then
+                local dist = (gp.Position - root.Position).Magnitude
+                local tTime = math.clamp(dist / Settings.FarmSpeed, 0.05, 1.5)
+                local tw = TweenService:Create(root, TweenInfo.new(tTime, Enum.EasingStyle.Linear),
+                    { CFrame = gp.CFrame + Vector3.new(0, 1.5, 0) })
+                tw:Play()
+                tw.Completed:Wait()
+                touchCoin(gp, root)
+                task.wait(0.1)
+                return
+            end
+        end
+    end
 
     -- 1. СТРОГИЙ ПРИОРИТЕТ: ЕСЛИ МЕШОК ПОЛОН (>= MaxBagCapacity, 40 МОНЕТ) -> ВЫИГРЫВАЕМ РАУНД!
     if currentCoins >= Settings.MaxBagCapacity then
@@ -1680,17 +1732,16 @@ local function farmStep()
             currentTween:Cancel(); currentTween = nil
         end
 
-        local bp = LocalPlayer:FindFirstChild("Backpack")
         local hasGunOrKnife = false
         for _, item in ipairs(char:GetChildren()) do
-            if item:IsA("Tool") then
+            if isGunItem(item) or isKnifeItem(item) then
                 hasGunOrKnife = true
                 break
             end
         end
         if not hasGunOrKnife and bp then
             for _, item in ipairs(bp:GetChildren()) do
-                if item:IsA("Tool") then
+                if isGunItem(item) or isKnifeItem(item) then
                     hasGunOrKnife = true
                     break
                 end
@@ -1736,18 +1787,17 @@ local function farmStep()
             currentTween = nil
         end
 
-        -- Запасной случай: если монет нет на карте больше 8 секунд и у нас есть оружие
+        -- Запасной случай: если монет нет на карте больше 5 секунд и у нас есть оружие
         if not emptyCoinsSince then
             emptyCoinsSince = tick()
-        elseif (tick() - emptyCoinsSince) > 8.0 and currentCoins >= Settings.MaxBagCapacity then
-            local bp = LocalPlayer:FindFirstChild("Backpack")
+        elseif (tick() - emptyCoinsSince) > 5.0 then
             local hasGunOrKnife = false
             for _, item in ipairs(char:GetChildren()) do
-                if item:IsA("Tool") then hasGunOrKnife = true; break end
+                if isGunItem(item) or isKnifeItem(item) then hasGunOrKnife = true; break end
             end
             if not hasGunOrKnife and bp then
                 for _, item in ipairs(bp:GetChildren()) do
-                    if item:IsA("Tool") then hasGunOrKnife = true; break end
+                    if isGunItem(item) or isKnifeItem(item) then hasGunOrKnife = true; break end
                 end
             end
             if hasGunOrKnife or roles.myRole == "Sheriff" or roles.myRole == "Murderer" then
@@ -1763,24 +1813,6 @@ local function farmStep()
 
     if not hum.PlatformStand then
         hum.PlatformStand = true
-    end
-
-    if Settings.AutoGrabGun then
-        local gun = getGunDrop()
-        if gun and gun:IsDescendantOf(Workspace) then
-            local gp = gun:IsA("BasePart") and gun or gun:FindFirstChildWhichIsA("BasePart", true)
-            if gp then
-                local dist = (gp.Position - root.Position).Magnitude
-                local tTime = math.clamp(dist / Settings.FarmSpeed, 0.05, 1.5)
-                local tw = TweenService:Create(root, TweenInfo.new(tTime, Enum.EasingStyle.Linear),
-                    { CFrame = gp.CFrame + Vector3.new(0, 1.5, 0) })
-                tw:Play()
-                tw.Completed:Wait()
-                touchCoin(gp, root)
-                task.wait(0.1)
-                if Settings.GunPriority then return end
-            end
-        end
     end
 
     local targetPart = getNearestCoin(root)
@@ -1859,9 +1891,9 @@ local function applySafeFarmPreset()
     Settings.AvoidDistance = 35
     Settings.AvoidAction = "Kite"
     Settings.AutoHopAfterRound = false
-    Settings.AutoGrabGun = false
-    Settings.GunPriority = false
-    Settings.AutoWinAsRoles = false
+    Settings.AutoGrabGun = true
+    Settings.GunPriority = true
+    Settings.AutoWinAsRoles = true
     Settings.ExtremeRAMSaver = true
     setAutoFarm(true)
     applyExtremeOptimization()
