@@ -1607,20 +1607,6 @@ local function farmStep()
         return
     end
 
-    if isInLobby(root) then
-        cachedUndergroundSpot = nil
-        emptyCoinsSince = nil
-        if hum.PlatformStand then
-            hum.PlatformStand = false
-            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-        end
-        if currentTween then
-            currentTween:Cancel()
-            currentTween = nil
-        end
-        return
-    end
-
     local roles = getRoles()
     local currentCoins = getCoinBagCount()
     local bp = LocalPlayer:FindFirstChild("Backpack")
