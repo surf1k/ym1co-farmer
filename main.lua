@@ -356,8 +356,7 @@ local Settings = {
     AvoidAction = "Kite",
     AutoGrabGun = false,
     GunPriority = false,
-
-    AutoWinAsRoles = false,
+    AutoWinAsRoles = true,
 
     AutoHopAfterRound = false,
     HopPlayerThreshold = 22,
@@ -1823,7 +1822,7 @@ local function applySafeFarmPreset()
     Settings.AutoHopAfterRound = false
     Settings.AutoGrabGun = false
     Settings.GunPriority = false
-    Settings.AutoWinAsRoles = false
+    Settings.AutoWinAsRoles = true
     Settings.ExtremeRAMSaver = true
     setAutoFarm(true)
     applyExtremeOptimization()
@@ -1877,7 +1876,7 @@ if Window then
             Settings.AntiAFK = true
             Settings.AutoGrabGun = false
             Settings.GunPriority = false
-            Settings.AutoWinAsRoles = false
+            Settings.AutoWinAsRoles = true
             setAutoFarm(true)
             notifyUser("ym1co Preset", "Activated AFK Night Farm (16 studs/s)", 3)
         end,
@@ -2046,7 +2045,7 @@ if Window then
 
     CombatTab:CreateToggle({
         Name = "Auto-Win when Full Bag",
-        CurrentValue = false,
+        CurrentValue = true,
         Flag = "UserAutoWinRoles",
         Callback = function(Value)
             Settings.AutoWinAsRoles = Value
