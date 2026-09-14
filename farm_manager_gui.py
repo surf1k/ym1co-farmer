@@ -124,6 +124,7 @@ class FarmManagerGUI:
         self.is_running = True
         self.farm_thread = None
         self.block_thread = None
+        self.pool_block_thread = None
         self.crash_thread = None
         self.funpay_thread = None
 
@@ -153,6 +154,10 @@ class FarmManagerGUI:
         if not self.block_thread or not self.block_thread.is_alive():
             self.block_thread = threading.Thread(target=farm_manager.block_queue_worker, daemon=True)
             self.block_thread.start()
+
+        if not self.pool_block_thread or not self.pool_block_thread.is_alive():
+            self.pool_block_thread = threading.Thread(target=farm_manager.auto_pool_blocker_worker, daemon=True)
+            self.pool_block_thread.start()
 
         if not self.crash_thread or not self.crash_thread.is_alive():
             self.crash_thread = threading.Thread(target=farm_manager.crash_dialog_watcher_worker, daemon=True)

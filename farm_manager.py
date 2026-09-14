@@ -1,3 +1,4 @@
+import base64
 import ctypes
 import glob
 import json
@@ -26,6 +27,9 @@ DONE_FILE = "done.txt"
 BOT_IDS_FILE = "bot_ids.json"
 ERRORS_FILE = "errors.json"
 IGNORED_ACCOUNTS_FILE = "ignored_accounts.json"
+BLOCKED_PAIRS_FILE = "blocked_pairs.json"
+FUNPAY_UPLOADED_FILE = "funpay_uploaded.json"
+FUNPAY_SOLD_FILE = "funpay_sold.txt"
 
 file_lock = threading.Lock()
 farm_enabled = threading.Event()
@@ -907,6 +911,33 @@ def can_spawn_more_bots():
     return True
 
 
+def extract_uid_from_cookie(cookie: str) -> int:
+    """Извлекает userId прямо из base64 protobuf полезной нагрузки куки .ROBLOSECURITY без запросов к сети."""
+    try:
+        if not cookie or "_|" not in cookie:
+            return 0
+        raw = cookie.split("|_")[-1].split(".")[0]
+        raw += "=" * ((4 - len(raw) % 4) % 4)
+        decoded = base64.b64decode(raw)
+        m = re.search(rb"uid\x12\x0b(\d{6,})", decoded) or re.search(rb"uid\x12\x0c(\d{6,})", decoded) or re.search(rb"uid[^\d]*(\d{6,})", decoded)
+        if m:
+            return int(m.group(1).decode())
+    except Exception:
+        pass
+    return 0
+
+
+def load_blocked_pairs() -> set:
+    data = load_json(BLOCKED_PAIRS_FILE, [])
+    if isinstance(data, list):
+        return set(data)
+    return set()
+
+
+def save_blocked_pairs(pairs: set):
+    save_json(BLOCKED_PAIRS_FILE, sorted(list(pairs)))
+
+
 # ==================== МОМЕНТАЛЬНАЯ БЛОКИРОВКА ПРИ ВСТРЕЧЕ (ИДЕАЛЬНЫЙ CSRF) ====================
 def get_all_known_bot_credentials():
     """Собирает карту {UserId: cookie} и {Username_lower: cookie} со всех файлов пула и аккаунтов."""
@@ -923,8 +954,8 @@ def get_all_known_bot_credentials():
             if fn.endswith(".json"):
                 data = load_json(fn, [])
                 for b in data:
-                    uid = b.get("userId")
                     c = b.get("cookie")
+                    uid = b.get("userId") or (extract_uid_from_cookie(c) if c else 0)
                     u = (b.get("username") or "").strip().lower()
                     if uid:
                         all_ids.add(int(uid))
@@ -938,23 +969,17 @@ def get_all_known_bot_credentials():
                         line = line.strip()
                         if not line or line.startswith("#"):
                             continue
-                        parts = line.split(":")
-                        if len(parts) >= 2:
-                            u = parts[0].strip().lower()
-                            if u: all_names.add(u)
-                            c = ""
-                            uid = 0
-                            for pt in parts[1:]:
-                                pt = pt.strip()
-                                if "_|WARNING:" in pt:
-                                    c = pt
-                                elif pt.isdigit() and len(pt) >= 6:
-                                    uid = int(pt)
+                        parsed = parse_account_line(line)
+                        if parsed:
+                            u = (parsed.get("username") or "").strip().lower()
+                            c = parsed.get("cookie") or ""
+                            uid = parsed.get("userId") or (extract_uid_from_cookie(c) if c else 0)
                             if uid:
-                                all_ids.add(uid)
-                                if c: cookie_by_id[uid] = c
-                            if u and c:
-                                cookie_by_name[u] = c
+                                all_ids.add(int(uid))
+                                if c: cookie_by_id[int(uid)] = c
+                            if u:
+                                all_names.add(u)
+                                if c: cookie_by_name[u] = c
         except Exception:
             pass
 
@@ -995,26 +1020,192 @@ def sync_bot_ids(user_id=None):
             pass
 
 
-def block_user(cookie, target_id):
-    """Самый надежный способ бана в Roblox"""
+def block_user(cookie, target_id, session=None, csrf=None):
+    """
+    Официальный безопасный REST API метод блокировки пользователя в Roblox.
+    Не использует браузер, не триггерит капчи и выполняется мгновенно.
+    """
     try:
-        session = requests.Session()
+        if not target_id or int(target_id) <= 0:
+            return False
+            
+        if session is None:
+            session = requests.Session()
+            
         clean_cookie = cookie.strip().strip('"').strip("'")
         session.cookies[".ROBLOSECURITY"] = clean_cookie
+        session.cookies["RBXEventTrackerV2"] = "browserid=1789324524369004"
+        session.cookies["rbx-ip2"] = "1"
 
-        # 1. Получаем свежий CSRF токен
-        r_csrf = session.post("https://auth.roblox.com/v2/logout", timeout=8)
-        csrf = r_csrf.headers.get("x-csrf-token")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Origin": "https://www.roblox.com",
+            "Referer": "https://www.roblox.com/"
+        }
+
         if not csrf:
-            return False
+            r_csrf = session.post("https://auth.roblox.com/v2/logout", headers=headers, timeout=8)
+            csrf = r_csrf.headers.get("x-csrf-token")
+            if not csrf:
+                return False
 
-        # 2. Выдаем бан
-        headers = {"X-CSRF-TOKEN": csrf, "Content-Type": "application/json"}
-        url = f"https://accountsettings.roblox.com/v1/users/{target_id}/block"
+        headers["X-CSRF-TOKEN"] = csrf
+        headers["Content-Type"] = "application/json"
+        url = f"https://apis.roblox.com/user-blocking-api/v1/users/{target_id}/block-user"
         res = session.post(url, headers=headers, json={}, timeout=8)
-        return res.status_code == 200
-    except Exception as e:
+        
+        # 200 = успешно заблокирован, 400 с телом "1" или "already" = уже заблокирован
+        if res.status_code == 200:
+            return True
+        t_clean = res.text.strip()
+        if res.status_code == 400 and (t_clean == "1" or "already" in t_clean.lower() or '"code":1' in t_clean.replace(" ", "")):
+            return True
+        elif res.status_code == 429:
+            time.sleep(3.0)
+            res2 = session.post(url, headers=headers, json={}, timeout=8)
+            t2 = res2.text.strip()
+            if res2.status_code == 200 or (res2.status_code == 400 and (t2 == "1" or "already" in t2.lower())):
+                return True
         return False
+    except Exception:
+        return False
+
+
+def ensure_mutual_blocks_for_bot(bot_entry):
+    """
+    Гарантирует, что данный бот взаимно заблокировал всех остальных ботов фермы
+    ДО захода на сервер MM2, исключая попадание в один матчмейкинг.
+    """
+    my_cookie = bot_entry.get("cookie", "").strip()
+    if not my_cookie:
+        return
+    
+    my_uid = bot_entry.get("userId") or extract_uid_from_cookie(my_cookie)
+    if not my_uid:
+        return
+    bot_entry["userId"] = my_uid
+
+    cookie_by_id, cookie_by_name, all_ids, all_names = get_all_known_bot_credentials()
+    blocked_pairs = load_blocked_pairs()
+    changed = False
+
+    other_uids = [uid for uid in all_ids if uid and uid != my_uid]
+    if not other_uids:
+        return
+
+    session_me = requests.Session()
+    session_me.cookies[".ROBLOSECURITY"] = my_cookie
+    session_me.cookies["RBXEventTrackerV2"] = "browserid=1789324524369004"
+    session_me.cookies["rbx-ip2"] = "1"
+    headers_me = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Origin": "https://www.roblox.com",
+        "Referer": "https://www.roblox.com/"
+    }
+    r_csrf = session_me.post("https://auth.roblox.com/v2/logout", headers=headers_me, timeout=8)
+    csrf_me = r_csrf.headers.get("x-csrf-token", "")
+
+    blocked_now = 0
+    for target_id in other_uids:
+        pair_key = f"{my_uid}:{target_id}"
+        if pair_key in blocked_pairs:
+            continue
+            
+        if block_user(my_cookie, target_id, session=session_me, csrf=csrf_me):
+            blocked_pairs.add(pair_key)
+            changed = True
+            blocked_now += 1
+            time.sleep(0.5)
+
+    # Взаимная блокировка от других ботов к этому боту
+    for target_id in other_uids:
+        pair_rev = f"{target_id}:{my_uid}"
+        if pair_rev in blocked_pairs:
+            continue
+            
+        target_cookie = cookie_by_id.get(target_id)
+        if target_cookie:
+            if block_user(target_cookie, my_uid):
+                blocked_pairs.add(pair_rev)
+                changed = True
+                time.sleep(0.5)
+
+    if changed:
+        save_blocked_pairs(blocked_pairs)
+        
+    if blocked_now > 0:
+        print(f"[BLOCK] [✓] Бот {bot_entry.get('username')} успешно взаимно заблокировал {blocked_now} ботов перед входом в MM2.")
+
+
+def auto_pool_blocker_worker():
+    """
+    Фоновый воркер, который непрерывно поддерживает взаимную блокировку всей фермы.
+    Сверяет всех ботов из базы и пула с blocked_pairs.json.
+    Работает тихо в фоне, не нагружает CPU, защищен от рейт-лимитов и капчи.
+    """
+    time.sleep(3)
+    while True:
+        try:
+            if farm_enabled.is_set():
+                cookie_by_id, cookie_by_name, all_ids, all_names = get_all_known_bot_credentials()
+                blocked_pairs = load_blocked_pairs()
+                changed = False
+
+                for my_uid in all_ids:
+                    if not my_uid or not farm_enabled.is_set():
+                        continue
+                    my_cookie = cookie_by_id.get(my_uid)
+                    if not my_cookie:
+                        continue
+
+                    other_uids = [u for u in all_ids if u and u != my_uid and f"{my_uid}:{u}" not in blocked_pairs]
+                    if not other_uids:
+                        continue
+
+                    session = requests.Session()
+                    session.cookies[".ROBLOSECURITY"] = my_cookie
+                    session.cookies["RBXEventTrackerV2"] = "browserid=1789324524369004"
+                    session.cookies["rbx-ip2"] = "1"
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                        "Origin": "https://www.roblox.com",
+                        "Referer": "https://www.roblox.com/"
+                    }
+                    try:
+                        r_csrf = session.post("https://auth.roblox.com/v2/logout", headers=headers, timeout=8)
+                        csrf = r_csrf.headers.get("x-csrf-token", "")
+                    except Exception:
+                        csrf = ""
+
+                    if not csrf:
+                        continue
+
+                    for target_uid in other_uids:
+                        pair_key = f"{my_uid}:{target_uid}"
+                        if pair_key in blocked_pairs:
+                            continue
+
+                        url = f"https://apis.roblox.com/user-blocking-api/v1/users/{target_uid}/block-user"
+                        headers["X-CSRF-TOKEN"] = csrf
+                        headers["Content-Type"] = "application/json"
+                        try:
+                            res = session.post(url, headers=headers, json={}, timeout=8)
+                            t_clean = res.text.strip()
+                            if res.status_code == 200 or (res.status_code == 400 and (t_clean == "1" or "already" in t_clean.lower())):
+                                blocked_pairs.add(pair_key)
+                                save_blocked_pairs(blocked_pairs)
+                                time.sleep(0.8)
+                            elif res.status_code == 403 and "moderated" in t_clean.lower():
+                                # Аккаунт в капче ('User is moderated'), переходим к следующему
+                                break
+                            elif res.status_code == 429:
+                                time.sleep(15.0)
+                                break
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        time.sleep(60)
 
 
 def block_queue_worker():
@@ -1040,6 +1231,8 @@ def block_queue_worker():
 
                 if lines:
                     cookie_by_id, cookie_by_name, _, _ = get_all_known_bot_credentials()
+                    blocked_pairs = load_blocked_pairs()
+                    bp_changed = False
 
                     for line in lines:
                         line = line.strip()
@@ -1058,12 +1251,18 @@ def block_queue_worker():
                             # Взаимный бан через официальный API Roblox
                             if cookie_me and target_id:
                                 if block_user(cookie_me, target_id):
-                                    print(f"[БАН] Бот {me_name or me_id} забанил {target_name or target_id}!")
+                                    print(f"[БАН] [✓] Бот {me_name or me_id} забанил {target_name or target_id}!")
+                                    blocked_pairs.add(f"{me_id}:{target_id}")
+                                    bp_changed = True
                             if cookie_target and me_id:
                                 if block_user(cookie_target, me_id):
-                                    print(f"[БАН] Бот {target_name or target_id} забанил {me_name or me_id}!")
+                                    print(f"[БАН] [✓] Бот {target_name or target_id} забанил {me_name or me_id}!")
+                                    blocked_pairs.add(f"{target_id}:{me_id}")
+                                    bp_changed = True
                         except Exception as e:
                             pass
+                    if bp_changed:
+                        save_blocked_pairs(blocked_pairs)
         except Exception:
             pass
         time.sleep(1.5)  # Проверяем файл каждые 1.5 секунды
@@ -1150,6 +1349,9 @@ def parse_account_line(line):
             uid = int(r_parts[1].strip())
 
     cookie = cookie.strip().strip('"').strip("'")
+    if not uid and cookie:
+        uid = extract_uid_from_cookie(cookie)
+
     if not u:
         return None
 
@@ -1466,6 +1668,12 @@ def launch_roblox_instance(bot_entry):
         )
         record_failure(bot_entry["username"], bot_entry.get("password", ""), err_msg, bot_entry.get("userId"), threshold=5)
         return None
+
+    # Гарантированная взаимная блокировка со всеми остальными ботами фермы ДО запуска в плейс:
+    try:
+        ensure_mutual_blocks_for_bot(bot_entry)
+    except Exception as e:
+        print(f"[BLOCK] [!] Предупреждение при предварительной блокировке для {bot_entry.get('username')}: {e}")
 
     place_id = CFG["farm"].get("place_id", 142823291)
     exe_path = find_roblox_executable()
@@ -2032,22 +2240,40 @@ class FunPayFormParser(HTMLParser):
 
 
 def get_done_accounts():
-    """Считывает уникальные строки готовых аккаунтов (100 lvl) из done.txt во всех возможных папках."""
+    """Считывает уникальные строки готовых аккаунтов (100 lvl) из done.txt во всех возможных папках, исключая уже залитые на FunPay или проигнорированные."""
     candidates = list(dict.fromkeys([
         DONE_FILE,
         os.path.join(os.path.dirname(os.path.abspath(__file__)), DONE_FILE),
         os.path.join(os.getcwd(), DONE_FILE),
     ]))
+    uploaded_history = [str(x).strip().lower() for x in load_json(FUNPAY_UPLOADED_FILE, [])]
+    ignored = [str(x).strip().lower() for x in load_json(IGNORED_ACCOUNTS_FILE, [])]
+    blacklisted = set(uploaded_history + ignored)
+
     all_lines = []
     for c in candidates:
         if os.path.exists(c):
+            cleaned_file = False
+            valid_file_lines = []
             try:
                 with file_lock:
                     with open(c, "r", encoding="utf-8") as df:
                         for l in df:
                             ls = l.strip()
-                            if ls and ls not in all_lines:
+                            if not ls:
+                                continue
+                            u_name, _ = extract_user_info_from_line(ls)
+                            if u_name and u_name.lower() in blacklisted:
+                                # Аккаунт уже был выгружен/продан на FunPay - удаляем из done.txt
+                                cleaned_file = True
+                                continue
+                            valid_file_lines.append(ls)
+                            if ls not in all_lines:
                                 all_lines.append(ls)
+                    if cleaned_file:
+                        with open(c, "w", encoding="utf-8") as df:
+                            for vl in valid_file_lines:
+                                df.write(vl + "\n")
             except Exception:
                 pass
     return all_lines
@@ -2234,34 +2460,26 @@ def sync_and_verify_funpay_lot(session=None, cur_cfg=None):
         m_node = re.search(r'/lots/(\d+)/?', category_url)
         node_id = m_node.group(1) if m_node else post_data.get("node_id", "925")
 
-        # Расчет актуальной цены (демпинг)
-        min_price = float(cur_fp.get("min_price_usd", cur_fp.get("min_price", 2.0)))
-        undercut_step = float(cur_fp.get("undercut_step_usd", cur_fp.get("undercut_step", 0.01)))
-        target_price = min_price
-        try:
-            r_cat = session.get(category_url, timeout=8)
-            if r_cat.status_code == 200:
-                prices = []
-                for p_match in re.findall(r'data-price="([\d\.]+)"', r_cat.text):
-                    try:
-                        pv = float(p_match)
-                        if pv > 0.5:
-                            prices.append(pv)
-                    except ValueError:
-                        pass
-                if prices:
-                    target_price = max(min_price, round(min(prices) - undercut_step, 2))
-        except Exception:
-            pass
+        # ЦЕНА ЛОТА: НЕ МЕНЯЕТСЯ АВТОМАТИЧЕСКИ (УСТАНАВЛИВАЕТСЯ ТОЛЬКО ЧЕЛОВЕКОМ ВРУЧНУЮ)
+        # Сохраняем оригинальную цену, которая уже выставлена на лоте:
+        target_price = post_data.get("price", "0")
 
         existing_secrets = post_data.get("secrets", "")
         existing_lines = [l.strip() for l in existing_secrets.splitlines() if l.strip()]
 
         # Объединяем секреты: сохраняем уже имеющиеся на FunPay и добавляем новые из done.txt
         merged_secrets = list(existing_lines)
+        uploaded_history = [str(x).strip().lower() for x in load_json(FUNPAY_UPLOADED_FILE, [])]
+        ignored = [str(x).strip().lower() for x in load_json(IGNORED_ACCOUNTS_FILE, [])]
+        blacklisted = set(uploaded_history + ignored)
+
         accounts_to_push = []
         for acc in done_accounts:
             u_acc, _ = extract_user_info_from_line(acc)
+            if u_acc and u_acc.lower() in blacklisted:
+                print(f"[FUNPAY] [🛡️ ЗАЩИТА] Аккаунт {u_acc} УЖЕ БЫЛ ВЫГРУЖЕН / ПРОДАН на FunPay! Повторная заливка заблокирована!")
+                continue
+
             already_in_funpay = False
             for ex in merged_secrets:
                 u_ex, _ = extract_user_info_from_line(ex)
@@ -2273,7 +2491,12 @@ def sync_and_verify_funpay_lot(session=None, cur_cfg=None):
                     break
             if not already_in_funpay:
                 merged_secrets.append(acc)
-            accounts_to_push.append(acc)
+                accounts_to_push.append(acc)
+
+        if not accounts_to_push:
+            print("[FUNPAY] [i] Нет новых аккаунтов для добавления в лот (все уже выставлены или ранее проданы).")
+            funpay_last_status = {"status": "OK", "msg": "Все готовые аккаунты уже на FunPay или проданы", "timestamp": time.time()}
+            return True, "Нет новых аккаунтов для добавления"
 
         total_count = len(merged_secrets)
         post_data["offer_id"] = str(lot_id)
@@ -2420,6 +2643,22 @@ def sync_and_verify_funpay_lot(session=None, cur_cfg=None):
 
         # ШАГ 5: ЕСЛИ ДА — СНЕСЛО! (ТОТАЛЬНАЯ ЗАЧИСТКА СО ВСЕГО ПК)
         print(f"[FUNPAY] [🗑️] Контрольная проверка пройдена: начинаем зачистку {len(accounts_to_push)} аккаунтов отовсюду с ПК...")
+        
+        # Навсегда фиксируем в базе выгруженных аккаунтов
+        try:
+            up_list = load_json(FUNPAY_UPLOADED_FILE, [])
+            for c_acc in confirmed_accounts:
+                c_name, _ = extract_user_info_from_line(c_acc)
+                if c_name and c_name.lower() not in [str(x).lower() for x in up_list]:
+                    up_list.append(c_name)
+            save_json(FUNPAY_UPLOADED_FILE, up_list)
+
+            with open(FUNPAY_SOLD_FILE, "a", encoding="utf-8") as sf:
+                for c_acc in confirmed_accounts:
+                    sf.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {c_acc}\n")
+        except Exception as e_up:
+            print(f"[FUNPAY] [!] Ошибка записи в {FUNPAY_UPLOADED_FILE}: {e_up}")
+
         purged_count = 0
         for d_line in accounts_to_push:
             u_name, u_id = extract_user_info_from_line(d_line)
@@ -2441,61 +2680,11 @@ def sync_and_verify_funpay_lot(session=None, cur_cfg=None):
 
 
 def update_funpay_lot_price(session, cur_cfg):
-    """Фоновое обновление цены лота (демпинг) и проверка активности, когда в done.txt нет новых аккаунтов."""
-    cur_fp = cur_cfg.get("funpay", {})
-    lot_id = cur_fp.get("lot_id")
-    if not lot_id or str(lot_id) in ("0", "12345678"):
-        return
-
-    category_url = cur_fp.get("category_url", "https://funpay.com/lots/925/")
-    min_price = float(cur_fp.get("min_price_usd", cur_fp.get("min_price", 2.0)))
-    undercut_step = float(cur_fp.get("undercut_step_usd", cur_fp.get("undercut_step", 0.01)))
-
-    target_price = min_price
-    try:
-        r_cat = session.get(category_url, timeout=8)
-        if r_cat.status_code == 200:
-            prices = []
-            for p_match in re.findall(r'data-price="([\d\.]+)"', r_cat.text):
-                try:
-                    pv = float(p_match)
-                    if pv > 0.5:
-                        prices.append(pv)
-                except ValueError:
-                    pass
-            if prices:
-                target_price = max(min_price, round(min(prices) - undercut_step, 2))
-
-        edit_url = f"https://funpay.com/lots/offerEdit?offer={lot_id}"
-        r_edit = session.get(edit_url, timeout=10)
-        if r_edit.status_code == 200:
-            parser = FunPayFormParser()
-            parser.feed(r_edit.text)
-            post_data = dict(parser.inputs)
-
-            curr_price = float(post_data.get("price", 0) or 0)
-            if abs(curr_price - target_price) > 0.009:
-                form_csrf_val = post_data.get("csrf_token")
-                m_node = re.search(r'/lots/(\d+)/?', category_url)
-                node_id = m_node.group(1) if m_node else post_data.get("node_id", "925")
-
-                post_data["offer_id"] = str(lot_id)
-                post_data["node_id"] = str(node_id)
-                post_data["price"] = str(target_price)
-
-                save_h = {"X-Requested-With": "XMLHttpRequest"}
-                if form_csrf_val:
-                    save_h["X-CSRF-Token"] = form_csrf_val
-                r_save = session.post("https://funpay.com/lots/offerSave", data=post_data, headers=save_h, timeout=10)
-                if r_save.status_code == 200:
-                    try:
-                        rj = r_save.json()
-                        if rj.get("done"):
-                            print(f"[FUNPAY] [↑] Авто-демпинг цены лота #{lot_id}: {curr_price} -> {target_price} {cur_fp.get('currency', 'USD')}")
-                    except Exception:
-                        pass
-    except Exception:
-        pass
+    """
+    Автоматическое изменение цены отключено.
+    Цену на FunPay устанавливает и меняет только человек вручную.
+    """
+    return
 
 
 # ==================== МОДУЛЬ FUNPAY (АВТОВЫДАЧА И АВТОПОДНЯТИЕ) ====================
@@ -2620,9 +2809,6 @@ def funpay_worker():
             if done_accounts:
                 # ВЫКИНУЛО НА ФП -> ПРОВЕРИЛО ВЫСТАВИЛОСЬ ИЛИ НЕТ -> ЕСЛИ ДА СНЕСЛО -> ЕСЛИ НЕТ ДИАГНОСТИКА
                 sync_and_verify_funpay_lot(session=session, cur_cfg=cur_cfg)
-            else:
-                # Если готовых аккаунтов нет - просто держим цену актуальной (демпинг)
-                update_funpay_lot_price(session=session, cur_cfg=cur_cfg)
 
         except Exception as e:
             pass
@@ -2646,11 +2832,13 @@ if __name__ == "__main__":
 
     t_farm = threading.Thread(target=farm_worker, daemon=True)
     t_block = threading.Thread(target=block_queue_worker, daemon=True)
+    t_pool_block = threading.Thread(target=auto_pool_blocker_worker, daemon=True)
     t_mem = threading.Thread(target=crash_dialog_watcher_worker, daemon=True)
     t_funpay = threading.Thread(target=funpay_worker, daemon=True)
 
     t_farm.start()
     t_block.start()
+    t_pool_block.start()
     t_mem.start()
     t_funpay.start()
 
