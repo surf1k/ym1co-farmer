@@ -161,8 +161,8 @@ def extract_user_info_from_line(line: str):
     if not line:
         return "", None
 
-    # 1. Формат FunPay / done.txt: name: User pass: Password, 100 lvl, 40,000 coins
-    m_name = re.search(r'name:\s*([^\s,]+)', line, re.IGNORECASE)
+    # 1. Формат FunPay / done.txt: name: User | pass: Password или name: User pass: Password
+    m_name = re.search(r'(?:name|login|логин):\s*([^\s,|]+)', line, re.IGNORECASE)
     if m_name:
         uname = m_name.group(1).strip()
         m_id = re.search(r'id:\s*(\d+)', line, re.IGNORECASE)
@@ -1669,17 +1669,23 @@ def launch_roblox_instance(bot_entry):
         record_failure(bot_entry["username"], bot_entry.get("password", ""), err_msg, bot_entry.get("userId"), threshold=5)
         return None
 
-    # Гарантированная взаимная блокировка со всеми остальными ботами фермы ДО запуска в плейс:
+    # Гарантированная взаимная блокировка со всеми остальными ботами фермы в фоне (не задерживая запуск):
     try:
-        ensure_mutual_blocks_for_bot(bot_entry)
+        threading.Thread(target=ensure_mutual_blocks_for_bot, args=(bot_entry,), daemon=True).start()
     except Exception as e:
-        print(f"[BLOCK] [!] Предупреждение при предварительной блокировке для {bot_entry.get('username')}: {e}")
+        print(f"[BLOCK] [!] Предупреждение при запуске фоновой блокировки для {bot_entry.get('username')}: {e}")
 
     place_id = CFG["farm"].get("place_id", 142823291)
     exe_path = find_roblox_executable()
 
     if not exe_path or not os.path.exists(exe_path):
         print(f"[FARM] [-] Ошибка: исполняемый файл Roblox не найден: {exe_path}")
+        return None
+
+    # Получаем СВЕЖИЙ auth-тикет СТРОГО перед самым вызовом Popen (срок жизни тикета в Roblox всего 15-30с)
+    fresh_ticket = get_auth_ticket(cookie) or ticket
+    if not fresh_ticket:
+        print(f"[FARM] [-] Не удалось обновить auth-тикет прямо перед запуском {bot_entry['username']}.")
         return None
 
     job_id = get_distinct_public_server(place_id, used_server_jobs)
@@ -1689,7 +1695,7 @@ def launch_roblox_instance(bot_entry):
     else:
         join_url = f"https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestGame&placeId={place_id}"
 
-    cmd = [exe_path, "--app", "-t", ticket, "-j", join_url]
+    cmd = [exe_path, "--app", "-t", fresh_ticket, "-j", join_url]
 
     # Считываем все существующие PID RobloxPlayerBeta до запуска
     existing_pids = set()
@@ -1871,9 +1877,9 @@ def farm_worker():
 
                     with file_lock:
                         with open(DONE_FILE, "a", encoding="utf-8") as df:
-                            # Формат строго для FunPay: name: nick pass: password, 100 lvl, 40,000 coins
+                            # Формат строго для FunPay: name: nick | pass: password (без лишних запятых и пометок, чтобы покупатели не путались)
                             df.write(
-                                f"name: {bot['username']} pass: {bot['password']}, {bot_lvl} lvl, {bot_coins:,} coins\n"
+                                f"name: {bot['username']} | pass: {bot['password']}\n"
                             )
 
                     # Полная зачистка аккаунта отовсюду с ПК (из пула, accounts.txt, txt.txt, RAM, стат), кроме done.txt

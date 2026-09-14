@@ -347,9 +347,9 @@ local Settings = {
     AutoFarm = true,
     FarmSpeed = 22,
     FarmMode = "Tween",
-    CoinDelay = 0.01,
+    CoinDelay = 0.1,
     MaxBagCapacity = 40,
-    ActionOnFull = "CombatWin",
+    ActionOnFull = "Underground",
 
     AvoidMurderer = true,
     AvoidDistance = 35,
@@ -1852,9 +1852,9 @@ end)
 local function applySafeFarmPreset()
     Settings.FarmMode = "Tween"
     Settings.FarmSpeed = 22
-    Settings.CoinDelay = 0.01
+    Settings.CoinDelay = 0.1
     Settings.MaxBagCapacity = 40
-    Settings.ActionOnFull = "CombatWin"
+    Settings.ActionOnFull = "Underground"
     Settings.AvoidMurderer = true
     Settings.AvoidDistance = 35
     Settings.AvoidAction = "Kite"
@@ -1908,7 +1908,7 @@ if Window then
         Callback = function()
             Settings.FarmMode = "Tween"
             Settings.FarmSpeed = 22
-            Settings.CoinDelay = 0.01
+            Settings.CoinDelay = 0.1
             Settings.MaxBagCapacity = 40
             Settings.ActionOnFull = "Underground"
             Settings.AvoidMurderer = true
@@ -1946,10 +1946,10 @@ if Window then
 
     FarmTab:CreateSlider({
         Name = "Coin Delay",
-        Range = { 0.01, 0.20 },
+        Range = { 0.01, 0.30 },
         Increment = 0.01,
         Suffix = " s",
-        CurrentValue = 0.01,
+        CurrentValue = 0.1,
         Flag = "UserCoinDelay",
         Callback = function(Value)
             Settings.CoinDelay = Value
