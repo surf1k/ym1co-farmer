@@ -345,9 +345,9 @@ end
 -- ==================== НАСТРОЙКИ ПО УМОЛЧАНИЮ ====================
 local Settings = {
     AutoFarm = true,
-    FarmSpeed = 22,
+    FarmSpeed = 16,
     FarmMode = "Tween",
-    CoinDelay = 0.1,
+    CoinDelay = 0.25,
     MaxBagCapacity = 40,
     ActionOnFull = "Underground",
 
@@ -1477,101 +1477,45 @@ local function executeCombatWin(root, char, roles)
                 -- Временно включаем 3D-рендеринг для 100% точности лучей и Mouse.Hit
                 pcall(function() RunService:Set3dRenderingEnabled(true) end)
 
-                -- Функция выстрела ван-тапом: одновременный прострел через все сетевые и локальные каналы
+                -- Безопасная функция выстрела: без флуда ремоутами, чтобы сервер не кикал
                 local function firePointBlank(targetHeadPos)
-                    -- 1. Удаленные события стрельбы MM2
                     pcall(function()
                         local shootRemote = ReplicatedStorage:FindFirstChild("ShootGun", true)
                         if shootRemote and shootRemote:IsA("RemoteEvent") then
                             shootRemote:FireServer(1, targetHeadPos, "AH")
-                            shootRemote:FireServer(targetHeadPos)
-                            shootRemote:FireServer(1, targetHeadPos)
-                            shootRemote:FireServer(targetHeadPos, root.Position)
-                        end
-                        local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent", true)
-                        if mainEvent and mainEvent:IsA("RemoteEvent") then
-                            mainEvent:FireServer("ShootGun", targetHeadPos)
-                            mainEvent:FireServer("ShootGun", 1, targetHeadPos, "AH")
-                            mainEvent:FireServer("Shoot", targetHeadPos)
-                            mainEvent:FireServer("ShootGun", targetHeadPos, root.Position)
                         end
                     end)
 
-                    -- 2. Внутренние ремоуты оружия
-                    pcall(function()
-                        for _, desc in ipairs(gun:GetDescendants()) do
-                            if desc:IsA("RemoteEvent") then
-                                desc:FireServer(1, targetHeadPos, "AH")
-                                desc:FireServer(targetHeadPos)
-                                desc:FireServer(1, targetHeadPos)
-                                desc:FireServer(mChar)
-                                desc:FireServer(targetHeadPos, root.Position)
-                            elseif desc:IsA("RemoteFunction") then
-                                pcall(function() desc:InvokeServer(1, targetHeadPos, "AH") end)
-                                pcall(function() desc:InvokeServer(targetHeadPos) end)
-                            end
-                        end
-                    end)
-
-                    -- 3. Активация инструмента и коннектов
                     pcall(function()
                         gun:Activate()
-                        if getconnections then
-                            for _, c in ipairs(getconnections(gun.Activated)) do
-                                pcall(function() c:Fire() end)
-                            end
-                        end
                     end)
 
-                    -- 4. Аимлок камеры и курсора мыши прямо в голову маньяка
                     pcall(function()
                         local cam = Workspace.CurrentCamera
                         local vp = cam.ViewportSize
                         local centerVec = Vector2.new(vp.X / 2, vp.Y / 2)
                         local sPoint, onScreen = cam:WorldToViewportPoint(targetHeadPos)
                         local targetVec = (onScreen and Vector2.new(sPoint.X, sPoint.Y)) or centerVec
-
-                        local vim = game:GetService("VirtualInputManager")
-                        if vim then
-                            vim:SendMouseMoveEvent(targetVec.X, targetVec.Y, game)
-                            vim:SendMouseButtonEvent(targetVec.X, targetVec.Y, 0, true, game, 0)
-                            vim:SendMouseButtonEvent(targetVec.X, targetVec.Y, 0, false, game, 0)
-                            vim:SendMouseButtonEvent(centerVec.X, centerVec.Y, 0, true, game, 0)
-                            vim:SendMouseButtonEvent(centerVec.X, centerVec.Y, 0, false, game, 0)
-                        end
-
                         VirtualUser:Button1Down(targetVec, cam.CFrame)
                         VirtualUser:Button1Up(targetVec, cam.CFrame)
-                        VirtualUser:Button1Down(centerVec, cam.CFrame)
-                        VirtualUser:Button1Up(centerVec, cam.CFrame)
-                    end)
-
-                    -- 5. Запасной клик
-                    pcall(function()
-                        if mouse1click then
-                            mouse1click()
-                        end
                     end)
                 end
 
-                -- ТЕЛЕПОРТАЦИЯ: СТРОГО СО СПИНЫ МАНЬЯКА (2.8 студа сзади, 1.4 студа выше головы)
-                -- Маньяк бьет ножом ТОЛЬКО вперед! Находясь сзади, бот защищен от ножа на 100%!
+                -- Позиционирование со спины маньяка и одиночные прицельные выстрелы
                 local tStart = tick()
-                while (tick() - tStart) < 1.2 and hum.Health > 0 and mHum and mHum.Health > 0 and targetMurderer.Parent do
+                while (tick() - tStart) < 1.0 and hum.Health > 0 and mHum and mHum.Health > 0 and targetMurderer.Parent do
                     local headPart = mChar:FindFirstChild("Head") or mRoot
                     local targetHeadPos = headPart.Position
                     local lookDir = mRoot.CFrame.LookVector
 
-                    -- Позиция вплотную за спиной маньяка (минус lookDir), глядя сверху вниз прямо в голову
                     local pointBlankBehindPos = targetHeadPos - (lookDir * 2.8) + Vector3.new(0, 1.4, 0)
-
                     root.AssemblyLinearVelocity = Vector3.zero
                     root.AssemblyAngularVelocity = Vector3.zero
                     root.CFrame = CFrame.lookAt(pointBlankBehindPos, targetHeadPos)
                     Workspace.CurrentCamera.CFrame = CFrame.lookAt(pointBlankBehindPos + Vector3.new(0, 0.4, 0), targetHeadPos)
 
                     firePointBlank(targetHeadPos)
-                    task.wait(0.05)
+                    task.wait(0.35)
                 end
 
                 pcall(function() RunService:Set3dRenderingEnabled(false) end)
@@ -1697,11 +1641,11 @@ local function farmStep()
         end
     end
 
-    if myGun or roles.myRole == "Sheriff" then
+    if Settings.AutoWinAsRoles and (myGun or roles.myRole == "Sheriff") then
         if currentTween then currentTween:Cancel(); currentTween = nil end
         root.AssemblyLinearVelocity = Vector3.zero
         executeCombatWin(root, char, roles)
-        task.wait(0.3)
+        task.wait(0.5)
         return
     end
 
@@ -1712,13 +1656,13 @@ local function farmStep()
             local gp = gun:IsA("BasePart") and gun or gun:FindFirstChildWhichIsA("BasePart", true)
             if gp then
                 local dist = (gp.Position - root.Position).Magnitude
-                local tTime = math.clamp(dist / Settings.FarmSpeed, 0.05, 1.5)
+                local tTime = math.clamp(dist / Settings.FarmSpeed, 0.1, 2.0)
                 local tw = TweenService:Create(root, TweenInfo.new(tTime, Enum.EasingStyle.Linear),
                     { CFrame = gp.CFrame + Vector3.new(0, 1.5, 0) })
                 tw:Play()
                 tw.Completed:Wait()
                 touchCoin(gp, root)
-                task.wait(0.1)
+                task.wait(0.2)
                 return
             end
         end
@@ -1748,7 +1692,7 @@ local function farmStep()
             end
         end
 
-        if hasGunOrKnife or roles.myRole == "Sheriff" or roles.myRole == "Murderer" then
+        if Settings.AutoWinAsRoles and (hasGunOrKnife or roles.myRole == "Sheriff" or roles.myRole == "Murderer") then
             executeCombatWin(root, char, roles)
             task.wait(1.5)
             return
@@ -1800,7 +1744,7 @@ local function farmStep()
                     if isGunItem(item) or isKnifeItem(item) then hasGunOrKnife = true; break end
                 end
             end
-            if hasGunOrKnife or roles.myRole == "Sheriff" or roles.myRole == "Murderer" then
+            if Settings.AutoWinAsRoles and (hasGunOrKnife or roles.myRole == "Sheriff" or roles.myRole == "Murderer") then
                 executeCombatWin(root, char, roles)
                 task.wait(1.5)
                 return
@@ -1856,7 +1800,7 @@ local function farmStep()
             root.AssemblyLinearVelocity = Vector3.zero
             touchCoin(targetPart, root)
 
-            task.wait(0.02)
+            task.wait(0.08)
 
             if not targetPart.Parent or not targetPart:IsDescendantOf(container) then
                 break
@@ -1876,24 +1820,24 @@ end
 
 task.spawn(function()
     while true do
-        task.wait(0.02)
+        task.wait(0.03)
         pcall(farmStep)
     end
 end)
 
 local function applySafeFarmPreset()
     Settings.FarmMode = "Tween"
-    Settings.FarmSpeed = 22
-    Settings.CoinDelay = 0.1
+    Settings.FarmSpeed = 16
+    Settings.CoinDelay = 0.25
     Settings.MaxBagCapacity = 40
     Settings.ActionOnFull = "Underground"
     Settings.AvoidMurderer = true
     Settings.AvoidDistance = 35
     Settings.AvoidAction = "Kite"
     Settings.AutoHopAfterRound = false
-    Settings.AutoGrabGun = true
-    Settings.GunPriority = true
-    Settings.AutoWinAsRoles = true
+    Settings.AutoGrabGun = false
+    Settings.GunPriority = false
+    Settings.AutoWinAsRoles = false
     Settings.ExtremeRAMSaver = true
     setAutoFarm(true)
     applyExtremeOptimization()
@@ -1917,7 +1861,7 @@ if Window then
         Name = "Safe Farm & Auto-Lobby Exit",
         Callback = function()
             applySafeFarmPreset()
-            notifyUser("ym1co Preset", "Activated Safe Farm (22 studs/s) + Extra RAM", 3)
+            notifyUser("ym1co Preset", "Activated Safe Farm (16 studs/s) + Extra RAM", 3)
         end,
     })
 
@@ -1939,14 +1883,17 @@ if Window then
         Name = "AFK Night Farm",
         Callback = function()
             Settings.FarmMode = "Tween"
-            Settings.FarmSpeed = 22
-            Settings.CoinDelay = 0.1
+            Settings.FarmSpeed = 16
+            Settings.CoinDelay = 0.25
             Settings.MaxBagCapacity = 40
             Settings.ActionOnFull = "Underground"
             Settings.AvoidMurderer = true
             Settings.AntiAFK = true
+            Settings.AutoGrabGun = false
+            Settings.GunPriority = false
+            Settings.AutoWinAsRoles = false
             setAutoFarm(true)
-            notifyUser("ym1co Preset", "Activated AFK Night Farm (22 studs/s)", 3)
+            notifyUser("ym1co Preset", "Activated AFK Night Farm (16 studs/s)", 3)
         end,
     })
 
@@ -1965,11 +1912,11 @@ if Window then
     FarmTab:CreateSection("Speed and Movement")
 
     FarmTab:CreateSlider({
-        Name = "Farm Speed (Safe: 20-25)",
+        Name = "Farm Speed (Safe: 14-18)",
         Range = { 10, 60 },
         Increment = 1,
         Suffix = " studs/s",
-        CurrentValue = 22,
+        CurrentValue = 16,
         Flag = "UserFarmSpeed",
         Callback = function(Value)
             Settings.FarmSpeed = Value
@@ -1978,10 +1925,10 @@ if Window then
 
     FarmTab:CreateSlider({
         Name = "Coin Delay",
-        Range = { 0.01, 0.30 },
+        Range = { 0.01, 0.40 },
         Increment = 0.01,
         Suffix = " s",
-        CurrentValue = 0.1,
+        CurrentValue = 0.25,
         Flag = "UserCoinDelay",
         Callback = function(Value)
             Settings.CoinDelay = Value
@@ -2003,7 +1950,7 @@ if Window then
     FarmTab:CreateDropdown({
         Name = "Action on Full",
         Options = { "CombatWin", "Lobby", "Underground", "Server Hop" },
-        CurrentOption = { "CombatWin" },
+        CurrentOption = { "Underground" },
         MultipleOptions = false,
         Flag = "UserActionOnFull",
         Callback = function(Option)
@@ -2113,7 +2060,7 @@ if Window then
 
     CombatTab:CreateToggle({
         Name = "Auto-Win when Full Bag",
-        CurrentValue = true,
+        CurrentValue = false,
         Flag = "UserAutoWinRoles",
         Callback = function(Value)
             Settings.AutoWinAsRoles = Value
@@ -2122,7 +2069,7 @@ if Window then
 
     CombatTab:CreateToggle({
         Name = "Auto Grab Gun",
-        CurrentValue = true,
+        CurrentValue = false,
         Flag = "UserAutoGrabGun",
         Callback = function(Value)
             Settings.AutoGrabGun = Value
