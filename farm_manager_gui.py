@@ -803,11 +803,10 @@ class FarmManagerGUI:
 
             def worker():
                 try:
-                    import cookie_grabber
                     def gui_log(msg):
                         log_out.insert(tk.END, msg + "\n")
                         log_out.see(tk.END)
-                    added = cookie_grabber.auto_grab_everything(log_fn=gui_log)
+                    added = farm_manager.auto_grab_everything(log_fn=gui_log)
                     lbl_log.configure(text=f"✓ Завершено! Добавлено в ферму: {added} аккаунтов с куки.")
                     self.refresh_ui()
                 except Exception as ex:
@@ -844,8 +843,7 @@ class FarmManagerGUI:
 
         def do_scan_real():
             try:
-                import cookie_grabber
-                found = cookie_grabber.scan_real_storage_for_all_accounts()
+                found = farm_manager.scan_real_storage_for_all_accounts()
                 if found:
                     txt_in.delete("1.0", tk.END)
                     for acc in found:
@@ -861,8 +859,7 @@ class FarmManagerGUI:
             f_path = filedialog.askopenfilename(filetypes=[("Text/CSV", "*.txt *.csv"), ("All files", "*.*")])
             if f_path:
                 try:
-                    import cookie_grabber
-                    parsed = cookie_grabber.parse_raw_accounts_file(f_path)
+                    parsed = farm_manager.parse_raw_accounts_file(f_path)
                     if parsed:
                         txt_in.delete("1.0", tk.END)
                         for acc in parsed:
@@ -911,8 +908,7 @@ class FarmManagerGUI:
 
             def worker_thread():
                 try:
-                    import cookie_grabber
-                    cookie_grabber.ensure_playwright_installed()
+                    farm_manager.ensure_playwright_installed()
                     total = len(accs)
                     success = 0
                     for i, a in enumerate(accs, 1):
@@ -920,7 +916,7 @@ class FarmManagerGUI:
                         p = a["password"]
                         log_out.insert(tk.END, f"[{i}/{total}] Вход в {u}...\n")
                         log_out.see(tk.END)
-                        ok, c, uid, msg = cookie_grabber.login_and_get_cookie(u, p, headless=True)
+                        ok, c, uid, msg = farm_manager.login_and_get_cookie(u, p, headless=True)
                         if ok and c:
                             uid_str = str(uid) if uid else "0"
                             line = f"{u}:{p}:{c}:{uid_str}\n"

@@ -1439,6 +1439,561 @@ def find_roblox_executable():
     return cfg_exe
 
 
+# ==================== COOKIE GRABBER (ВСТРОЕННЫЙ АВТО-КУКИ ВСЕГО) ====================
+def ensure_playwright_installed():
+    """Проверяет наличие Playwright и браузера Chromium. При отсутствии устанавливает автоматически."""
+    try:
+        import playwright
+    except ImportError:
+        print("[*] Установка библиотеки playwright...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright", "--quiet"])
+
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            b = p.chromium.launch(headless=True)
+            b.close()
+    except Exception:
+        print("[*] Загрузка браузера Chromium для Playwright...")
+        subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
+
+
+def extract_roblox_cookies_from_bytes(data: bytes):
+    """Извлекает все .ROBLOSECURITY куки из сырых байтов (поддерживает UTF-8, ASCII и UTF-16LE)."""
+    found = set()
+    if not data:
+        return found
+
+    # 1. UTF-8 / ASCII pattern
+    pattern_ascii = re.compile(rb"(_\|WARNING:-DO-NOT-SHARE-THIS\.[a-zA-Z0-9_\-\.]+)")
+    for m in pattern_ascii.finditer(data):
+        try:
+            val = m.group(1).decode("utf-8", errors="ignore").strip().strip('"').strip("'")
+            if len(val) > 100:
+                found.add(val)
+        except Exception:
+            pass
+
+    # 2. UTF-16LE pattern (характерно для Windows / WebView2 LevelDB)
+    pattern_u16 = re.compile(
+        rb"((?:_\x00\|\x00W\x00A\x00R\x00N\x00I\x00N\x00G\x00:\x00-\x00D\x00O\x00-\x00N\x00O\x00T\x00-\x00S\x00H\x00A\x00R\x00E\x00-\x00T\x00H\x00I\x00S\x00\.\x00)(?:[a-zA-Z0-9_\-\.]\x00){100,})"
+    )
+    for m in pattern_u16.finditer(data):
+        try:
+            val = m.group(1).decode("utf-16le", errors="ignore").strip().strip('"').strip("'")
+            if len(val) > 100:
+                found.add(val)
+        except Exception:
+            pass
+
+    return found
+
+
+def validate_cookie_and_get_user(cookie: str):
+    """
+    Проверяет валидность .ROBLOSECURITY куки через официальный API Roblox.
+    Возвращает dict с id, name, displayName или None, если кука невалидна.
+    """
+    try:
+        s = requests.Session()
+        s.cookies[".ROBLOSECURITY"] = cookie
+        resp = s.get("https://users.roblox.com/v1/users/authenticated", timeout=8)
+        if resp.status_code == 200:
+            data = resp.json()
+            return {
+                "userId": data.get("id"),
+                "username": data.get("name"),
+                "displayName": data.get("displayName"),
+            }
+    except Exception:
+        pass
+    return None
+
+
+def parse_txt_metadata_csv(file_path: str = "txt.txt"):
+    """
+    Парсит файл экспорта BloxGen (txt.txt).
+    Возвращает словарь {robloxId: record, username_lower: record}.
+    """
+    res = {}
+    if not os.path.exists(file_path):
+        return res
+
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("generatedAt,"):
+                    continue
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 3:
+                    u = parts[1]
+                    rid = parts[2]
+                    rec = {"username": u, "robloxId": rid}
+                    if rid:
+                        res[str(rid)] = rec
+                    if u:
+                        res[u.lower()] = rec
+    except Exception:
+        pass
+    return res
+
+
+def scan_real_storage_for_all_accounts(log_fn=None):
+    """
+    Сканирует все папки и файлы Real (%LOCALAPPDATA%/Real, WebView2 LevelDB, IndexedDB, JSON).
+    Находит все куки, пароли и логины сгенерированных аккаунтов.
+    """
+    def log(msg):
+        if log_fn:
+            log_fn(msg)
+        else:
+            print(msg)
+
+    found_accounts = []
+    seen_cookies = set()
+    seen_users = set()
+
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    app_data = os.environ.get("APPDATA", "")
+
+    candidate_dirs = [
+        os.path.join(local_app_data, "Real"),
+        os.path.join(app_data, "Real"),
+        r"C:\Users\DDDen\AppData\Local\Real",
+    ]
+    for d in glob.glob(r"C:\Users\*\AppData\Local\Real"):
+        if d not in candidate_dirs:
+            candidate_dirs.append(d)
+
+    file_patterns = [
+        os.path.join("**", "*.json"),
+        os.path.join("**", "*.ldb"),
+        os.path.join("**", "*.log"),
+        os.path.join("**", "*.txt"),
+        os.path.join("EBWebView", "Default", "Local Storage", "leveldb", "*.*"),
+        os.path.join("EBWebView", "Default", "IndexedDB", "**", "*.*"),
+        os.path.join("EBWebView", "Default", "Session Storage", "*.*"),
+    ]
+
+    txt_meta = parse_txt_metadata_csv()
+
+    for c_dir in candidate_dirs:
+        if not c_dir or not os.path.isdir(c_dir):
+            continue
+
+        log(f"[*] Сканирование хранилища Real: {c_dir}")
+
+        matched_files = set()
+        for pat in file_patterns:
+            for fp in glob.glob(os.path.join(c_dir, pat), recursive=True):
+                if os.path.isfile(fp):
+                    matched_files.add(fp)
+
+        for fp in matched_files:
+            try:
+                if os.path.getsize(fp) > 60 * 1024 * 1024:
+                    continue
+
+                with open(fp, "rb") as f:
+                    raw = f.read()
+
+                cookies_in_file = extract_roblox_cookies_from_bytes(raw)
+                for cookie in cookies_in_file:
+                    if cookie in seen_cookies:
+                        continue
+                    seen_cookies.add(cookie)
+
+                    pos = raw.find(cookie.encode("utf-8", errors="ignore"))
+                    chunk_text = ""
+                    if pos != -1:
+                        c_start = max(0, pos - 500)
+                        c_end = min(len(raw), pos + len(cookie) + 500)
+                        chunk_text = raw[c_start:c_end].decode("utf-8", errors="ignore")
+
+                    pwd_match = re.search(r'password["\']?\s*[:=]\s*["\']?([^"\'\s\x00-\x1f,}{]+)', chunk_text, re.IGNORECASE)
+                    user_match = re.search(r'username["\']?\s*[:=]\s*["\']?([a-zA-Z0-9_]{3,25})', chunk_text, re.IGNORECASE)
+
+                    pwd = pwd_match.group(1).strip() if pwd_match else ""
+                    uname = user_match.group(1).strip() if user_match else ""
+
+                    u_info = validate_cookie_and_get_user(cookie)
+                    if u_info:
+                        actual_uname = u_info["username"]
+                        actual_uid = u_info["userId"]
+
+                        if actual_uname.lower() in seen_users:
+                            continue
+                        seen_users.add(actual_uname.lower())
+
+                        found_accounts.append({
+                            "username": actual_uname,
+                            "password": pwd,
+                            "cookie": cookie,
+                            "userId": actual_uid,
+                            "source": "Real Storage",
+                        })
+                        log(f"  ✓ Найден аккаунт в Real: {actual_uname} (ID: {actual_uid}) [Куки: OK]")
+
+            except Exception:
+                pass
+
+    return found_accounts
+
+
+def parse_raw_accounts_file(file_path: str):
+    """Парсит любой файл с аккаунтами (логин:пароль, CSV, логин:пароль:куки:id)."""
+    if not os.path.exists(file_path):
+        return []
+
+    accounts = []
+    seen = set()
+
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("generatedAt,"):
+                continue
+
+            parts = line.split(":")
+            if len(parts) >= 3 and "_|WARNING:" in line:
+                u = parts[0].strip()
+                p = parts[1].strip()
+                c = ""
+                uid = 0
+                for pt in parts[2:]:
+                    if "_|WARNING:" in pt:
+                        c = pt.strip()
+                    elif pt.strip().isdigit():
+                        uid = int(pt.strip())
+                if u and c and u.lower() not in seen:
+                    seen.add(u.lower())
+                    accounts.append({"username": u, "password": p, "cookie": c, "userId": uid, "source": file_path})
+                    continue
+
+            if len(parts) >= 2:
+                u = parts[0].strip()
+                p = parts[1].strip()
+                if u and p and u.lower() not in seen:
+                    seen.add(u.lower())
+                    accounts.append({"username": u, "password": p, "cookie": "", "userId": 0, "source": file_path})
+                    continue
+
+            if "," in line and ":" not in line:
+                c_parts = [p.strip() for p in line.split(",")]
+                if len(c_parts) >= 3 and c_parts[2].isdigit():
+                    u = c_parts[1]
+                    uid = int(c_parts[2])
+                    if u and u.lower() not in seen:
+                        seen.add(u.lower())
+                        accounts.append({"username": u, "password": "", "cookie": "", "userId": uid, "source": file_path})
+                        continue
+
+            ws_parts = line.split()
+            if len(ws_parts) >= 2:
+                u = ws_parts[0].strip()
+                p = ws_parts[1].strip()
+                if u and p and u.lower() not in seen:
+                    seen.add(u.lower())
+                    accounts.append({"username": u, "password": p, "cookie": "", "userId": 0, "source": file_path})
+
+    return accounts
+
+
+def convert_real_csv_to_farm_format(csv_path: str = "txt.txt", output_path: str = ACCOUNTS_FILE):
+    """Конвертирует файл экспорта Real CSV (txt.txt) в наш рабочий формат."""
+    if not os.path.exists(csv_path):
+        return []
+
+    existing_map = {}
+    if os.path.exists(output_path):
+        try:
+            with open(output_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split(":", 2)
+                    if len(parts) >= 2:
+                        u = parts[0].strip()
+                        p = parts[1].strip()
+                        rest = parts[2].strip() if len(parts) > 2 else ""
+                        c = rest
+                        uid = 0
+                        if ":" in rest:
+                            rparts = rest.rsplit(":", 1)
+                            if rparts[1].strip().isdigit():
+                                c = rparts[0].strip()
+                                uid = int(rparts[1].strip())
+                        existing_map[u.lower()] = {"password": p, "cookie": c, "userId": uid}
+        except Exception:
+            pass
+
+    converted = []
+    with open(csv_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("generatedAt,"):
+                continue
+            if "," in line and ":" not in line:
+                pts = [p.strip() for p in line.split(",")]
+                if len(pts) >= 3 and pts[2].isdigit():
+                    u = pts[1]
+                    uid = int(pts[2])
+                    known = existing_map.get(u.lower(), {})
+                    p = known.get("password", "")
+                    c = known.get("cookie", "")
+                    actual_uid = uid or known.get("userId", 0)
+                    converted.append(f"{u}:{p}:{c}:{actual_uid}")
+
+    return converted
+
+
+def login_and_get_cookie(username: str, password: str, headless: bool = True):
+    """Выполняет вход в Roblox через Playwright Chromium и извлекает .ROBLOSECURITY и userId."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        ensure_playwright_installed()
+        from playwright.sync_api import sync_playwright
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=headless)
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 720},
+            )
+            page = context.new_page()
+
+            page.goto("https://www.roblox.com/login", timeout=30000)
+            page.wait_for_selector("#login-username", timeout=15000)
+
+            page.fill("#login-username", username)
+            page.fill("#login-password", password)
+            page.click("#login-button")
+
+            cookie_found = None
+            start_time = time.time()
+            while (time.time() - start_time) < 12:
+                cookies = context.cookies()
+                for c in cookies:
+                    if c.get("name") == ".ROBLOSECURITY" and c.get("value"):
+                        cookie_found = c["value"]
+                        break
+                if cookie_found:
+                    break
+
+                try:
+                    error_el = page.query_selector(".text-error, #login-form-error")
+                    if error_el and error_el.inner_text().strip():
+                        err_text = error_el.inner_text().strip()
+                        browser.close()
+                        return False, None, None, f"Ошибка входа: {err_text}"
+                except Exception:
+                    pass
+
+                time.sleep(1)
+
+            browser.close()
+
+            if not cookie_found:
+                return False, None, None, "Куки не получена (капча или неверный пароль)"
+
+            u_info = validate_cookie_and_get_user(cookie_found)
+            uid = u_info["userId"] if u_info else 0
+            return True, cookie_found, uid, "Успешно"
+
+    except Exception as e:
+        return False, None, None, f"Исключение Playwright: {e}"
+
+
+def get_existing_usernames(target_file: str = ACCOUNTS_FILE):
+    """Возвращает список уже имеющихся аккаунтов, а также проданных/игнорируемых."""
+    existing = set()
+    for tf in [target_file, ACCOUNTS_FILE, POOL_ACCOUNTS_FILE]:
+        if os.path.exists(tf):
+            try:
+                with open(tf, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        parts = line.strip().split(":")
+                        if parts and parts[0].strip():
+                            existing.add(parts[0].strip().lower())
+            except Exception:
+                pass
+
+    if os.path.exists(IGNORED_ACCOUNTS_FILE):
+        try:
+            with open(IGNORED_ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+                ignored = json.load(f)
+                for ig in ignored:
+                    if ig and isinstance(ig, str):
+                        existing.add(ig.strip().lower())
+        except Exception:
+            pass
+
+    if os.path.exists(FUNPAY_UPLOADED_FILE):
+        try:
+            with open(FUNPAY_UPLOADED_FILE, "r", encoding="utf-8") as f:
+                up_accs = json.load(f)
+                for ua in up_accs:
+                    if ua and isinstance(ua, str):
+                        existing.add(ua.strip().lower())
+        except Exception:
+            pass
+
+    if os.path.exists(FUNPAY_SOLD_FILE):
+        try:
+            with open(FUNPAY_SOLD_FILE, "r", encoding="utf-8") as f:
+                for l in f:
+                    m = re.search(r'name:\s*([^\s,|]+)', l, re.IGNORECASE)
+                    if m:
+                        existing.add(m.group(1).strip().lower())
+                    elif ":" in l:
+                        existing.add(l.split(":")[0].strip().lower())
+        except Exception:
+            pass
+
+    if os.path.exists(DONE_FILE):
+        try:
+            with open(DONE_FILE, "r", encoding="utf-8") as f:
+                for l in f:
+                    m = re.search(r'name:\s*([^\s,]+)', l, re.IGNORECASE)
+                    if m:
+                        existing.add(m.group(1).strip().lower())
+                    elif ":" in l:
+                        existing.add(l.split(":")[0].strip().lower())
+        except Exception:
+            pass
+
+    return existing
+
+
+def auto_grab_everything(log_fn=None) -> int:
+    """
+    ГЛАВНАЯ ФУНКЦИЯ — АВТОКУКИ ВСЕГО:
+    1. Авто-сканирование Real на все нагенерированные аккаунты с готовыми куками.
+    2. Авто-загрузка из txt.txt, real_accounts.txt, accounts_raw.txt.
+    3. Авто-логин через Playwright для всех аккаунтов без куки.
+    4. Авто-добавление в accounts.txt и accounts_pool.txt.
+    """
+    def log(msg):
+        if log_fn:
+            log_fn(msg)
+        else:
+            print(msg)
+
+    log("=" * 65)
+    log("   👑 ym1co farmer — АВТОКУКИ ВСЕГО (Real / BloxGen / Farm)")
+    log("=" * 65)
+
+    existing = get_existing_usernames(ACCOUNTS_FILE)
+    total_added = 0
+
+    # ШАГ 1: Сканируем локальное хранилище Real
+    log("\n[1/3] 🔍 Поиск сгенерированных аккаунтов в хранилище Real (%localappdata%)...")
+    real_accounts = scan_real_storage_for_all_accounts(log_fn=log)
+
+    for acc in real_accounts:
+        uname = acc["username"]
+        pwd = acc.get("password", "")
+        cookie = acc["cookie"]
+        uid = acc.get("userId", 0)
+
+        if uname.lower() in existing:
+            log(f"  ⏩ {uname}: Уже есть в ферме, пропускаем.")
+            continue
+
+        line = f"{uname}:{pwd}:{cookie}:{uid}\n"
+        with open(ACCOUNTS_FILE, "a", encoding="utf-8") as af:
+            af.write(line)
+        try:
+            with open(POOL_ACCOUNTS_FILE, "a", encoding="utf-8") as pf:
+                pf.write(line)
+        except Exception:
+            pass
+
+        existing.add(uname.lower())
+        total_added += 1
+        log(f"  ✅ {uname}: Успешно добавлен в ферму из Real! (ID: {uid})")
+
+    # ШАГ 2: Проверяем аккаунты из файлов (txt.txt, real_accounts.txt, accounts_raw.txt)
+    log("\n[2/3] 📂 Проверка текстовых списков аккаунтов...")
+    raw_files = ["real_accounts.txt", "accounts_raw.txt", "txt.txt"]
+    file_accounts = []
+    for rf in raw_files:
+        if os.path.exists(rf):
+            parsed = parse_raw_accounts_file(rf)
+            if parsed:
+                log(f"  Найдено {len(parsed)} записей в файле {rf}")
+                file_accounts.extend(parsed)
+
+    # Аккаунты, у которых уже есть куки
+    for acc in file_accounts:
+        uname = acc["username"]
+        cookie = acc.get("cookie", "")
+        if cookie and uname.lower() not in existing:
+            u_info = validate_cookie_and_get_user(cookie)
+            if u_info:
+                uid = u_info["userId"]
+                line = f"{uname}:{acc.get('password','')}:{cookie}:{uid}\n"
+                with open(ACCOUNTS_FILE, "a", encoding="utf-8") as af:
+                    af.write(line)
+                try:
+                    with open(POOL_ACCOUNTS_FILE, "a", encoding="utf-8") as pf:
+                        pf.write(line)
+                except Exception:
+                    pass
+                existing.add(uname.lower())
+                total_added += 1
+                log(f"  ✅ {uname}: Валидная куки добавлена из файла! (ID: {uid})")
+
+    # ШАГ 3: Аккаунты с логином и паролем, но без куки — авто-логин через Playwright
+    need_login = [
+        a for a in file_accounts
+        if a["username"].lower() not in existing and a.get("password") and not a.get("cookie")
+    ]
+
+    if need_login:
+        log(f"\n[3/3] 🌐 Авто-получение куки через Playwright для {len(need_login)} аккаунтов...")
+        ensure_playwright_installed()
+
+        for idx, acc in enumerate(need_login, 1):
+            uname = acc["username"]
+            pwd = acc["password"]
+
+            if uname.lower() in existing:
+                continue
+
+            log(f"  [{idx}/{len(need_login)}] Авторизация {uname} в Roblox...")
+            ok, cookie, uid, msg = login_and_get_cookie(uname, pwd, headless=True)
+
+            if ok and cookie:
+                uid_str = str(uid) if uid else "0"
+                line = f"{uname}:{pwd}:{cookie}:{uid_str}\n"
+                with open(ACCOUNTS_FILE, "a", encoding="utf-8") as af:
+                    af.write(line)
+                try:
+                    with open(POOL_ACCOUNTS_FILE, "a", encoding="utf-8") as pf:
+                        pf.write(line)
+                except Exception:
+                    pass
+                existing.add(uname.lower())
+                total_added += 1
+                log(f"  ✅ {uname}: Куки получена и сохранена! (ID: {uid_str})")
+            else:
+                log(f"  ❌ {uname}: Не удалось ({msg})")
+            time.sleep(1)
+    else:
+        log("\n[3/3] ℹ️ Нет аккаунтов, требующих ручной авторизации через Playwright.")
+
+    log("\n" + "=" * 65)
+    log(f"🎉 АВТОКУКИ ВСЕГО ЗАВЕРШЕНО! Добавлено новых аккаунтов: {total_added}")
+    log(f"📁 Файлы обновлены: {ACCOUNTS_FILE} и {POOL_ACCOUNTS_FILE}")
+    log("=" * 65 + "\n")
+    return total_added
+
+
 def sync_accounts_into_pool():
     """Синхронизирует аккаунты из:
     0. Real Storage (%LOCALAPPDATA%/Real — авто-куки на полном автомате)
@@ -1448,8 +2003,7 @@ def sync_accounts_into_pool():
     Гарантирует, что все незавершенные аккаунты (не 100 lvl) находятся в очереди пула.
     """
     try:
-        import cookie_grabber
-        cookie_grabber.scan_real_storage_for_all_accounts()
+        scan_real_storage_for_all_accounts()
     except Exception:
         pass
 
@@ -1698,8 +2252,7 @@ def launch_roblox_instance(bot_entry):
     if not ticket and bot_entry.get("password"):
         print(f"[FARM] [*] Куки {bot_entry['username']} истекла или отсутствует. Авто-получение новой куки через Playwright...")
         try:
-            import cookie_grabber
-            ok, new_c, new_uid, _ = cookie_grabber.login_and_get_cookie(bot_entry["username"], bot_entry["password"], headless=True)
+            ok, new_c, new_uid, _ = login_and_get_cookie(bot_entry["username"], bot_entry["password"], headless=True)
             if ok and new_c:
                 bot_entry["cookie"] = new_c
                 if new_uid:
@@ -2897,6 +3450,10 @@ def funpay_worker():
 
 # ==================== ЗАПУСК ПОТОКОВ ====================
 if __name__ == "__main__":
+    if any(arg in sys.argv for arg in ["--grab-cookies", "--cookies", "cookies", "-c"]):
+        auto_grab_everything()
+        sys.exit(0)
+
     if sys.platform == "win32":
         try:
             # Отключаем модальные окна системных ошибок Windows (SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX)
