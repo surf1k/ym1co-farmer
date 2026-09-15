@@ -1474,48 +1474,67 @@ local function executeCombatWin(root, char, roles)
                     currentTween = nil
                 end
 
-                -- Временно включаем 3D-рендеринг для 100% точности лучей и Mouse.Hit
                 pcall(function() RunService:Set3dRenderingEnabled(true) end)
 
-                -- Безопасная функция выстрела: без флуда ремоутами, чтобы сервер не кикал
+                -- Проверенная функция выстрела для современного MM2
                 local function firePointBlank(targetHeadPos)
+                    -- 1. Нативный RemoteEvent пистолета MM2 (char.Gun.Shoot)
                     pcall(function()
-                        local shootRemote = ReplicatedStorage:FindFirstChild("ShootGun", true)
-                        if shootRemote and shootRemote:IsA("RemoteEvent") then
-                            shootRemote:FireServer(1, targetHeadPos, "AH")
+                        local shootRemote = gun:FindFirstChild("Shoot") 
+                            or gun:FindFirstChildWhichIsA("RemoteEvent", true)
+                        if shootRemote then
+                            shootRemote:FireServer(
+                                CFrame.new(targetHeadPos + Vector3.new(0, 1, 0)),
+                                CFrame.new(targetHeadPos)
+                            )
                         end
                     end)
 
+                    -- 2. Запасной старый ремоут
+                    pcall(function()
+                        local shootRemoteOld = ReplicatedStorage:FindFirstChild("ShootGun", true)
+                        if shootRemoteOld and shootRemoteOld:IsA("RemoteEvent") then
+                            shootRemoteOld:FireServer(1, targetHeadPos, "AH")
+                        end
+                    end)
+
+                    -- 3. Активация инструмента
                     pcall(function()
                         gun:Activate()
                     end)
 
+                    -- 4. Аппаратный клик через VirtualInputManager
                     pcall(function()
+                        local vim = game:GetService("VirtualInputManager")
                         local cam = Workspace.CurrentCamera
                         local vp = cam.ViewportSize
                         local centerVec = Vector2.new(vp.X / 2, vp.Y / 2)
                         local sPoint, onScreen = cam:WorldToViewportPoint(targetHeadPos)
                         local targetVec = (onScreen and Vector2.new(sPoint.X, sPoint.Y)) or centerVec
-                        VirtualUser:Button1Down(targetVec, cam.CFrame)
-                        VirtualUser:Button1Up(targetVec, cam.CFrame)
+                        vim:SendMouseButtonEvent(targetVec.X, targetVec.Y, 0, true, game, 0)
+                        task.wait(0.04)
+                        vim:SendMouseButtonEvent(targetVec.X, targetVec.Y, 0, false, game, 0)
                     end)
+
+                    if mouse1click then
+                        pcall(function() mouse1click() end)
+                    end
                 end
 
-                -- Позиционирование со спины маньяка и одиночные прицельные выстрелы
+                -- БЕЗОПАСНАЯ ПОЗИЦИЯ: зависаем на 16 стадов СВЕРХУ (вне зоны досягаемости ножа!)
                 local tStart = tick()
-                while (tick() - tStart) < 1.0 and hum.Health > 0 and mHum and mHum.Health > 0 and targetMurderer.Parent do
+                while (tick() - tStart) < 1.8 and hum.Health > 0 and mHum and mHum.Health > 0 and targetMurderer.Parent do
                     local headPart = mChar:FindFirstChild("Head") or mRoot
                     local targetHeadPos = headPart.Position
-                    local lookDir = mRoot.CFrame.LookVector
 
-                    local pointBlankBehindPos = targetHeadPos - (lookDir * 2.8) + Vector3.new(0, 1.4, 0)
+                    local safeAerialPos = targetHeadPos + Vector3.new(0, 16, 0)
                     root.AssemblyLinearVelocity = Vector3.zero
                     root.AssemblyAngularVelocity = Vector3.zero
-                    root.CFrame = CFrame.lookAt(pointBlankBehindPos, targetHeadPos)
-                    Workspace.CurrentCamera.CFrame = CFrame.lookAt(pointBlankBehindPos + Vector3.new(0, 0.4, 0), targetHeadPos)
+                    root.CFrame = CFrame.lookAt(safeAerialPos, targetHeadPos)
+                    Workspace.CurrentCamera.CFrame = CFrame.lookAt(safeAerialPos + Vector3.new(0, 0.4, 0), targetHeadPos)
 
                     firePointBlank(targetHeadPos)
-                    task.wait(0.35)
+                    task.wait(0.25)
                 end
 
                 pcall(function() RunService:Set3dRenderingEnabled(false) end)
@@ -1549,6 +1568,14 @@ local function executeCombatWin(root, char, roles)
     end
 
     if knife then
+        if knife.Parent ~= char then
+            hum:EquipTool(knife)
+            local t0 = tick()
+            while knife.Parent ~= char and (tick() - t0) < 0.5 do
+                task.wait(0.03)
+            end
+        end
+
         local victims = {}
         local sheriffPlayer = roles.sheriff
 
@@ -1571,18 +1598,44 @@ local function executeCombatWin(root, char, roles)
             end
         end
 
+        local stabRemote = knife:FindFirstChild("Stab") or knife:FindFirstChildWhichIsA("RemoteEvent", true)
+        local throwRemote = knife:FindFirstChild("Events") and knife.Events:FindFirstChild("KnifeThrown")
+
         for _, victim in ipairs(victims) do
             if victim.Character then
                 local vHum = victim.Character:FindFirstChildWhichIsA("Humanoid")
                 local vRoot = victim.Character:FindFirstChild("HumanoidRootPart")
 
                 if vHum and vRoot and vHum.Health > 0 then
-                    local attackPos = CFrame.new(vRoot.Position.X, math.max(vRoot.Position.Y + 1.5, 2), vRoot.Position.Z)
+                    local attackPos = CFrame.new(vRoot.Position.X, vRoot.Position.Y + 1.2, vRoot.Position.Z)
                     root.AssemblyLinearVelocity = Vector3.zero
                     root.CFrame = attackPos
 
+                    -- 1. Ремоут удара ножа MM2 (Knife.Stab "Slash")
+                    if stabRemote then
+                        pcall(function() stabRemote:FireServer("Slash") end)
+                    end
+
+                    -- 2. Ремоут броска ножа в упор
+                    if throwRemote then
+                        pcall(function()
+                            throwRemote:FireServer(
+                                CFrame.new(root.Position),
+                                CFrame.new(vRoot.Position)
+                            )
+                        end)
+                    end
+
+                    -- 3. Активация инструмента и touch interest
                     knife:Activate()
-                    touchCoin(vRoot, knife:FindFirstChild("Handle") or root)
+                    local h = knife:FindFirstChild("Handle")
+                    if firetouchinterest and h then
+                        pcall(function()
+                            firetouchinterest(vRoot, h, 0)
+                            task.wait(0.01)
+                            firetouchinterest(vRoot, h, 1)
+                        end)
+                    end
                     task.wait(0.08)
                 end
             end
@@ -1611,8 +1664,7 @@ local function farmStep()
     local currentCoins = getCoinBagCount()
     local bp = LocalPlayer:FindFirstChild("Backpack")
 
-    -- 0. АБСОЛЮТНЫЙ ПРИОРИТЕТ: ЕСЛИ У НАС ЕСТЬ ПИСТОЛЕТ (ШЕРИФ ИЛИ ПОДОБРАЛИ ПИСТОЛЕТ)
-    -- Мгновенно убиваем маньяка и забираем победу (дает 1000-1500 XP за победу шерифа/героя)!
+    -- 0. САМООБОРОНА ШЕРИФА ИЛИ АТАКА ПРИ ПОЛНОМ МЕШКЕ:
     local myGun = nil
     for _, item in ipairs(char:GetChildren()) do
         if isGunItem(item) then myGun = item; break end
@@ -1621,17 +1673,29 @@ local function farmStep()
         for _, item in ipairs(bp:GetChildren()) do
             if isGunItem(item) then
                 myGun = item
-                hum:EquipTool(myGun)
                 break
             end
         end
     end
 
-    if Settings.AutoWinAsRoles and (myGun or roles.myRole == "Sheriff") then
+    local isSheriff = (myGun ~= nil or roles.myRole == "Sheriff")
+    local murdererThreat = false
+    if isSheriff and roles.murderer and roles.murderer.Character then
+        local mRoot = roles.murderer.Character:FindFirstChild("HumanoidRootPart")
+        if mRoot and (mRoot.Position - root.Position).Magnitude < 32 then
+            murdererThreat = true
+        end
+    end
+
+    -- Шериф стреляет ТОЛЬКО если:
+    -- 1) Маньяк подошел слишком близко (< 32 studs) -> Самооборона с воздуха!
+    -- 2) Мешок уже полон монет (>= MaxBagCapacity) -> Завершаем раунд победой!
+    -- 3) Включен явный приоритет охоты (Settings.GunPriority)
+    if Settings.AutoWinAsRoles and isSheriff and (murdererThreat or currentCoins >= Settings.MaxBagCapacity or Settings.GunPriority) then
         if currentTween then currentTween:Cancel(); currentTween = nil end
         root.AssemblyLinearVelocity = Vector3.zero
         executeCombatWin(root, char, roles)
-        task.wait(0.5)
+        task.wait(0.4)
         return
     end
 
@@ -1743,6 +1807,12 @@ local function farmStep()
 
     if not hum.PlatformStand then
         hum.PlatformStand = true
+    end
+
+    -- ПРЯЧЕМ ЛЮБОЕ ОРУЖИЕ ПРИ СБОРЕ МОНЕТ:
+    -- Если в руках нож или пистолет - убираем в инвентарь, чтобы не палиться и не летать с ножом в руках!
+    if char:FindFirstChildWhichIsA("Tool") then
+        hum:UnequipTools()
     end
 
     local targetPart = getNearestCoin(root)
