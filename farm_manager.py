@@ -3590,9 +3590,13 @@ class FarmManagerGUI:
         self.funpay_thread = None
 
         # Кэш виджетов для in-place обновлений (никаких пересозданий каждую секунду!)
+        # Кэш виджетов для in-place обновлений (никаких пересозданий каждую секунду!)
         self.bot_card_widgets = {}     # username -> dict of widgets
         self.error_card_widgets = {}   # username -> dict of widgets
         self.empty_bots_label = None
+        self.empty_errors_label = None
+        self.active_tab = "bots"
+        self.last_errors_list = []
 
         # Запуск рабочих потоков фермы
         self.start_farm_threads()
@@ -3635,21 +3639,140 @@ class FarmManagerGUI:
         # 2. ПАНЕЛЬ МЕТРИК (Steampunk Gauges)
         self.create_metrics_bar()
 
-        # 3. КРИТИЧЕСКИЙ БЛОК: ОШИБКИ ПОДКЛЮЧЕНИЯ И ПАРОЛИ
-        self.error_frame = tk.Frame(self.root, bg=COLOR_ERROR_BG, highlightthickness=2, highlightbackground=COLOR_ERROR_BORDER, padx=12, pady=10)
-        self.error_header_label = tk.Label(self.error_frame, text="", bg=COLOR_ERROR_BG, fg=COLOR_ERROR_TEXT, font=self.font_header)
-        self.error_header_label.pack(anchor="w", pady=(0, 6))
-        self.error_cards_container = tk.Frame(self.error_frame, bg=COLOR_ERROR_BG)
-        self.error_cards_container.pack(fill=tk.X)
+        # 3. ПАНЕЛЬ ВКЛАДОК (Tabs)
+        self.create_tab_bar()
 
-        # 4. РАЗДЕЛ АКТИВНЫХ БОТОВ MM2
-        self.bots_header = tk.Frame(self.root, bg=COLOR_BG)
-        self.bots_header.pack(fill=tk.X, padx=16, pady=(10, 4))
-        tk.Label(self.bots_header, text="⚙️ АКТИВНЫЕ БОТЫ MM2 В РАБОТЕ", bg=COLOR_BG, fg=COLOR_TEXT_MUTED, font=self.font_sub).pack(side=tk.LEFT)
+        # 4. КОНСОЛЬНЫЙ ЛОГ (Сворачиваемый, снизу)
+        self.create_console_drawer()
 
-        # Скроллируемая область ботов
-        self.bots_container = tk.Frame(self.root, bg=COLOR_BG)
-        self.bots_container.pack(fill=tk.BOTH, expand=True, padx=14, pady=4)
+        # 5. СТАТУС БАР (в самом низу)
+        self.create_footer()
+
+        # 6. КОНТЕНТ ВКЛАДОК
+        # 6.1. Вкладка "Боты"
+        self.create_bots_tab()
+
+        # 6.2. Вкладка "Ошибки"
+        self.create_errors_tab()
+
+        # Глобальный скролл колесиком мыши по активной вкладке
+        def on_mousewheel(event):
+            try:
+                if self.active_tab == "bots":
+                    self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+                elif self.active_tab == "errors":
+                    self.canvas_errors.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            except Exception:
+                pass
+
+        self.root.bind_all("<MouseWheel>", on_mousewheel)
+
+    def create_tab_bar(self):
+        self.tab_bar = tk.Frame(self.root, bg=COLOR_BG)
+        self.tab_bar.pack(fill=tk.X, padx=14, pady=(6, 2))
+
+        self.btn_tab_bots = tk.Button(
+            self.tab_bar,
+            text="⚙️ АКТИВНЫЕ БОТЫ (0)",
+            bg="#182b22",
+            fg=COLOR_BRIGHT_GOLD,
+            font=self.font_header,
+            relief="flat",
+            bd=1,
+            highlightthickness=2,
+            highlightbackground=COLOR_EMERALD,
+            padx=16,
+            pady=6,
+            cursor="hand2",
+            command=lambda: self.switch_tab("bots")
+        )
+        self.btn_tab_bots.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.btn_tab_errors = tk.Button(
+            self.tab_bar,
+            text="⚠️ ОШИБКИ И СБОИ (0)",
+            bg="#101b13",
+            fg=COLOR_TEXT_MUTED,
+            font=self.font_sub,
+            relief="flat",
+            bd=1,
+            highlightthickness=1,
+            highlightbackground=COLOR_CARD_BORDER,
+            padx=16,
+            pady=6,
+            cursor="hand2",
+            command=lambda: self.switch_tab("errors")
+        )
+        self.btn_tab_errors.pack(side=tk.LEFT, padx=6)
+
+    def switch_tab(self, tab_name: str):
+        self.active_tab = tab_name
+        before_target = self.console_frame if hasattr(self, "console_frame") else None
+        if tab_name == "bots":
+            if hasattr(self, "tab_errors_frame"):
+                self.tab_errors_frame.pack_forget()
+            if hasattr(self, "tab_bots_frame"):
+                self.tab_bots_frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=4, before=before_target)
+        elif tab_name == "errors":
+            if hasattr(self, "tab_bots_frame"):
+                self.tab_bots_frame.pack_forget()
+            if hasattr(self, "tab_errors_frame"):
+                self.tab_errors_frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=4, before=before_target)
+        self.update_tab_button_styles()
+
+    def update_tab_button_styles(self):
+        has_errs = len(self.last_errors_list) > 0
+        if self.active_tab == "bots":
+            self.btn_tab_bots.configure(
+                bg="#182b22",
+                fg=COLOR_BRIGHT_GOLD,
+                font=self.font_header,
+                highlightthickness=2,
+                highlightbackground=COLOR_EMERALD,
+            )
+            if has_errs:
+                self.btn_tab_errors.configure(
+                    bg="#2b1414",
+                    fg="#ff7b72",
+                    font=self.font_sub,
+                    highlightthickness=1,
+                    highlightbackground="#e06c75",
+                )
+            else:
+                self.btn_tab_errors.configure(
+                    bg="#101b13",
+                    fg=COLOR_TEXT_MUTED,
+                    font=self.font_sub,
+                    highlightthickness=1,
+                    highlightbackground=COLOR_CARD_BORDER,
+                )
+        else:
+            self.btn_tab_bots.configure(
+                bg="#101b13",
+                fg=COLOR_TEXT_MUTED,
+                font=self.font_sub,
+                highlightthickness=1,
+                highlightbackground=COLOR_CARD_BORDER,
+            )
+            self.btn_tab_errors.configure(
+                bg="#351818" if has_errs else "#182b22",
+                fg="#ff7b72" if has_errs else COLOR_BRIGHT_GOLD,
+                font=self.font_header,
+                highlightthickness=2,
+                highlightbackground="#e06c75" if has_errs else COLOR_GOLD,
+            )
+
+    def create_bots_tab(self):
+        self.tab_bots_frame = tk.Frame(self.root, bg=COLOR_BG)
+        before_target = self.console_frame if hasattr(self, "console_frame") else None
+        self.tab_bots_frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=4, before=before_target)
+
+        self.bots_header = tk.Frame(self.tab_bots_frame, bg=COLOR_BG)
+        self.bots_header.pack(fill=tk.X, pady=(2, 4))
+        tk.Label(self.bots_header, text="⚙️ МОНИТОРИНГ АКТИВНЫХ ПРОЦЕССОВ В ИГРЕ", bg=COLOR_BG, fg=COLOR_TEXT_MUTED, font=self.font_sub).pack(side=tk.LEFT)
+
+        self.bots_container = tk.Frame(self.tab_bots_frame, bg=COLOR_BG)
+        self.bots_container.pack(fill=tk.BOTH, expand=True)
 
         self.canvas = tk.Canvas(self.bots_container, bg=COLOR_BG, highlightthickness=0)
         self.scrollbar = tk.Scrollbar(self.bots_container, orient="vertical", command=self.canvas.yview)
@@ -3666,13 +3789,106 @@ class FarmManagerGUI:
         self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfig(self.canvas_window, width=event.width))
-        self.canvas.bind_all("<MouseWheel>", lambda event: self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
 
-        # 5. КОНСОЛЬНЫЙ ЛОГ (Сворачиваемый)
-        self.create_console_drawer()
+    def create_errors_tab(self):
+        self.tab_errors_frame = tk.Frame(self.root, bg=COLOR_BG)
+        # Не упаковываем сразу — по умолчанию активна вкладка "Боты"
 
-        # 6. СТАТУС БАР
-        self.create_footer()
+        errors_bar = tk.Frame(self.tab_errors_frame, bg=COLOR_BG)
+        errors_bar.pack(fill=tk.X, pady=(2, 6))
+
+        self.lbl_errors_title = tk.Label(errors_bar, text="⚠️ АККАУНТЫ С ОШИБКАМИ / ТРЕБУЮТ ВНИМАНИЯ (0 АКК.)", bg=COLOR_BG, fg=COLOR_ERROR_TEXT, font=self.font_header)
+        self.lbl_errors_title.pack(side=tk.LEFT)
+
+        btn_err_copy_all = tk.Button(
+            errors_bar,
+            text="📋 Скопировать все (Логин:Пароль)",
+            bg="#2b1f08",
+            fg=COLOR_BRIGHT_GOLD,
+            font=self.font_sub,
+            relief="flat",
+            bd=1,
+            highlightthickness=1,
+            highlightbackground=COLOR_GOLD,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            command=self.copy_all_errors
+        )
+        btn_err_copy_all.pack(side=tk.RIGHT, padx=4)
+
+        btn_err_clear_all = tk.Button(
+            errors_bar,
+            text="🗑️ Очистить список ошибок",
+            bg="#3a1818",
+            fg="#ff7777",
+            font=self.font_sub,
+            relief="flat",
+            bd=1,
+            highlightthickness=1,
+            highlightbackground="#aa3333",
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            command=self.clear_all_errors
+        )
+        btn_err_clear_all.pack(side=tk.RIGHT, padx=4)
+
+        self.errors_container = tk.Frame(self.tab_errors_frame, bg=COLOR_BG)
+        self.errors_container.pack(fill=tk.BOTH, expand=True)
+
+        self.canvas_errors = tk.Canvas(self.errors_container, bg=COLOR_BG, highlightthickness=0)
+        self.scrollbar_errors = tk.Scrollbar(self.errors_container, orient="vertical", command=self.canvas_errors.yview)
+        self.scrollable_errors_frame = tk.Frame(self.canvas_errors, bg=COLOR_BG)
+
+        self.scrollable_errors_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas_errors.configure(scrollregion=self.canvas_errors.bbox("all"))
+        )
+        self.canvas_errors_window = self.canvas_errors.create_window((0, 0), window=self.scrollable_errors_frame, anchor="nw")
+        self.canvas_errors.configure(xscrollcommand=None, yscrollcommand=self.scrollbar_errors.set)
+
+        self.canvas_errors.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.scrollbar_errors.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.canvas_errors.bind("<Configure>", lambda event: self.canvas_errors.itemconfig(self.canvas_errors_window, width=event.width))
+
+    def copy_all_errors(self):
+        if not self.last_errors_list:
+            self.status_lbl.configure(text="ℹ️ Нет аккаунтов с ошибками для копирования.")
+            return
+        lines = []
+        for err in self.last_errors_list:
+            u = err.get("username", "")
+            p = err.get("password", "")
+            if u:
+                lines.append(f"{u}:{p}" if p else u)
+        if lines:
+            copy_to_clipboard(self.root, "\n".join(lines))
+            self.status_lbl.configure(text=f"✓ Скопировано {len(lines)} аккаунтов с ошибками!")
+
+    def clear_all_errors(self):
+        if not self.last_errors_list:
+            return
+        save_json(ERRORS_FILE, [])
+        self.last_errors_list = []
+        for w in self.error_card_widgets.values():
+            w["frame"].destroy()
+        self.error_card_widgets.clear()
+        self.btn_tab_errors.configure(text="⚠️ ОШИБКИ И СБОИ (0)")
+        self.lbl_errors_title.configure(text="⚠️ АККАУНТЫ С ОШИБКАМИ / ТРЕБУЮТ ВНИМАНИЯ (0 АКК.)")
+        self.update_tab_button_styles()
+        if not self.empty_errors_label:
+            self.empty_errors_label = tk.Label(
+                self.scrollable_errors_frame,
+                text="🌿 В данный момент нет аккаунтов с ошибками. Все боты работают штатно!",
+                bg=COLOR_BG,
+                fg=COLOR_TEXT_MUTED,
+                font=self.font_header,
+                pady=40
+            )
+            self.empty_errors_label.pack(fill=tk.BOTH, expand=True)
+        self.status_lbl.configure(text="✓ Все ошибки успешно очищены!")
 
     def create_header(self):
         hdr = tk.Frame(self.root, bg=COLOR_SURFACE, highlightthickness=2, highlightbackground=COLOR_GOLD, padx=16, pady=10)
@@ -3736,8 +3952,9 @@ class FarmManagerGUI:
             self.metric_widgets.append((lbl_v, lbl_s))
 
     def create_console_drawer(self):
-        c_frame = tk.Frame(self.root, bg=COLOR_BG)
-        c_frame.pack(fill=tk.X, padx=14, pady=(2, 4))
+        self.console_frame = tk.Frame(self.root, bg=COLOR_BG)
+        self.console_frame.pack(fill=tk.X, padx=14, pady=(2, 4))
+        c_frame = self.console_frame
 
         self.show_console = tk.BooleanVar(value=False)
         self.console_btn = tk.Button(c_frame, text="▶ 📜 Журнал работы фермы (Live Console)", bg="#121e16", fg=COLOR_TEXT_MUTED, activebackground="#1a2d21", activeforeground=COLOR_TEXT_MAIN, font=self.font_small_bold, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, anchor="w", padx=8, pady=3, cursor="hand2", command=self.toggle_console)
@@ -3869,26 +4086,49 @@ class FarmManagerGUI:
         if uname in self.error_card_widgets:
             self.error_card_widgets[uname]["frame"].destroy()
             del self.error_card_widgets[uname]
-        if not self.error_card_widgets:
-            self.error_frame.pack_forget()
-        else:
-            self.error_header_label.config(text=f"⚠️ ОШИБКА ПОДКЛЮЧЕНИЯ / ТРЕБУЕТСЯ ВНИМАНИЕ ({len(self.error_card_widgets)} АКК.)")
+        if hasattr(self, "last_errors_list"):
+            self.last_errors_list = [e for e in self.last_errors_list if e.get("username") != uname]
+        self.btn_tab_errors.configure(text=f"⚠️ ОШИБКИ И СБОИ ({len(self.error_card_widgets)})")
+        self.lbl_errors_title.configure(text=f"⚠️ АККАУНТЫ С ОШИБКАМИ / ТРЕБУЮТ ВНИМАНИЯ ({len(self.error_card_widgets)} АКК.)")
+        self.update_tab_button_styles()
+        if not self.error_card_widgets and not self.empty_errors_label:
+            self.empty_errors_label = tk.Label(
+                self.scrollable_errors_frame,
+                text="🌿 В данный момент нет аккаунтов с ошибками. Все боты работают штатно!",
+                bg=COLOR_BG,
+                fg=COLOR_TEXT_MUTED,
+                font=self.font_header,
+                pady=40
+            )
+            self.empty_errors_label.pack(fill=tk.BOTH, expand=True)
         self.status_lbl.configure(text=f"✓ Аккаунт {uname} навсегда удален из пула фермы и исключен из RAM")
 
     def render_errors(self, errors):
-        """Плавный рендер ошибок без удаления и пересоздания всех виджетов."""
+        """Плавный рендер ошибок во вкладке 'Ошибки' без удаления и пересоздания всех виджетов."""
+        self.last_errors_list = errors
+        self.btn_tab_errors.configure(text=f"⚠️ ОШИБКИ И СБОИ ({len(errors)})")
+        self.lbl_errors_title.configure(text=f"⚠️ АККАУНТЫ С ОШИБКАМИ / ТРЕБУЮТ ВНИМАНИЯ ({len(errors)} АКК.)")
+        self.update_tab_button_styles()
+
         if not errors:
-            if self.error_frame.winfo_ismapped():
-                self.error_frame.pack_forget()
+            if not self.empty_errors_label:
+                self.empty_errors_label = tk.Label(
+                    self.scrollable_errors_frame,
+                    text="🌿 В данный момент нет аккаунтов с ошибками. Все боты работают штатно!",
+                    bg=COLOR_BG,
+                    fg=COLOR_TEXT_MUTED,
+                    font=self.font_header,
+                    pady=40
+                )
+                self.empty_errors_label.pack(fill=tk.BOTH, expand=True)
             for w in self.error_card_widgets.values():
                 w["frame"].destroy()
             self.error_card_widgets.clear()
             return
 
-        if not self.error_frame.winfo_ismapped():
-            self.error_frame.pack(fill=tk.X, padx=14, pady=4, before=self.bots_header)
-
-        self.error_header_label.config(text=f"⚠️ ОШИБКА ПОДКЛЮЧЕНИЯ / ТРЕБУЕТСЯ ВНИМАНИЕ ({len(errors)} АКК.)")
+        if self.empty_errors_label:
+            self.empty_errors_label.destroy()
+            self.empty_errors_label = None
 
         current_unames = set()
         for err in errors:
@@ -3899,12 +4139,10 @@ class FarmManagerGUI:
             current_unames.add(uname)
 
             if uname in self.error_card_widgets:
-                # Обновляем существующую карточку
                 self.error_card_widgets[uname]["lbl_msg"].config(text=f"🔴 Причина: {msg}  [{ts}]")
             else:
-                # Создаем карточку ошибки один раз
-                card = tk.Frame(self.error_cards_container, bg="#180d0d", highlightthickness=1, highlightbackground=COLOR_GOLD, padx=10, pady=6)
-                card.pack(fill=tk.X, pady=3)
+                card = tk.Frame(self.scrollable_errors_frame, bg="#180d0d", highlightthickness=1, highlightbackground=COLOR_GOLD, padx=12, pady=8)
+                card.pack(fill=tk.X, pady=4, padx=2)
 
                 r1 = tk.Frame(card, bg="#180d0d")
                 r1.pack(fill=tk.X)
@@ -3924,7 +4162,7 @@ class FarmManagerGUI:
                 btn_copy_p.pack(side=tk.RIGHT, padx=4)
 
                 r2 = tk.Frame(card, bg="#180d0d")
-                r2.pack(fill=tk.X, pady=(4, 0))
+                r2.pack(fill=tk.X, pady=(6, 0))
                 lbl_msg = tk.Label(r2, text=f"🔴 Причина: {msg}  [{ts}]", bg="#180d0d", fg=COLOR_TEXT_MUTED, font=self.font_small)
                 lbl_msg.pack(side=tk.LEFT)
 
@@ -3933,7 +4171,6 @@ class FarmManagerGUI:
                     "lbl_msg": lbl_msg,
                 }
 
-        # Удаляем устраненные ошибки
         for uname in list(self.error_card_widgets.keys()):
             if uname not in current_unames:
                 self.error_card_widgets[uname]["frame"].destroy()
@@ -3941,6 +4178,9 @@ class FarmManagerGUI:
 
     def render_bots(self, bots, target_lvl=100, target_coins=40000, goal_mode="both"):
         """Плавный in-place рендер ботов (без пересоздания виджетов и потери скролла)."""
+        if hasattr(self, "btn_tab_bots"):
+            self.btn_tab_bots.configure(text=f"⚙️ АКТИВНЫЕ БОТЫ ({len(bots)})")
+
         if not bots:
             if not self.empty_bots_label:
                 self.empty_bots_label = tk.Label(self.scrollable_bots_frame, text="🌿 В данный момент нет активных ботов в игре.", bg=COLOR_BG, fg=COLOR_TEXT_MUTED, font=self.font_header, pady=30)
