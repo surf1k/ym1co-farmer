@@ -12,13 +12,13 @@ if %errorlevel% == 0 (
 ) else (
     echo [*] Git не найден, загрузка файлов через curl...
     curl -s -L -o farm_manager.py https://raw.githubusercontent.com/surf1k/ym1co-farmer/main/farm_manager.py
-    curl -s -L -o farm_manager_gui.py https://raw.githubusercontent.com/surf1k/ym1co-farmer/main/farm_manager_gui.py
     curl -s -L -o main.lua https://raw.githubusercontent.com/surf1k/ym1co-farmer/main/main.lua
     curl -s -L -o obfuscated.lua https://raw.githubusercontent.com/surf1k/ym1co-farmer/main/obfuscated.lua
 )
 
 :: Удаление устаревших мусорных файлов
 if exist cookie_grabber.py del /f /q cookie_grabber.py >nul 2>&1
+if exist farm_manager_gui.py del /f /q farm_manager_gui.py >nul 2>&1
 if exist get_cookies.bat del /f /q get_cookies.bat >nul 2>&1
 if exist auto_block_all.py del /f /q auto_block_all.py >nul 2>&1
 if exist real_chrome_unlocker.py del /f /q real_chrome_unlocker.py >nul 2>&1

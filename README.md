@@ -14,15 +14,15 @@ py -m pip install requests psutil beautifulsoup4
 ```
 *(или через pip: `pip install requests psutil beautifulsoup4`)*
 
-### 2. Запуск Farm Manager с GUI:
-```cmd
-py farm_manager_gui.py
-```
-*(или через python: `python farm_manager_gui.py`)*
-
-### 3. Запуск консольной версии (без GUI):
+### 2. Запуск Farm Manager (с GUI по умолчанию):
 ```cmd
 py farm_manager.py
+```
+*(или через батник `start_gui.bat`)*
+
+### 3. Запуск консольной версии (без GUI / Headless):
+```cmd
+py farm_manager.py --cli
 ```
 
 ---
@@ -148,7 +148,7 @@ py farm_manager.py
 ### Шаг 5. Запуск фермы (В 1 клик)
 
 1. **Запусти `Real` от имени администратора** (окно Real должно быть активно/свернуто на панели задач).
-2. **Запусти файл `start_gui.bat`** в папке `farm` (или выполни `py farm_manager_gui.py`).
+2. **Запусти файл `start_gui.bat`** в папке `farm` (или выполни `py farm_manager.py`).
 
 **Всё! Больше ничего делать не нужно!**
 - Менеджер фермы достанет аккаунты из пула и откроет окна игры с интервалом в 10 секунд.

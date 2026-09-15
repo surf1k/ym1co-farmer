@@ -9,4 +9,7 @@ mm2_farm_stats.txt
 errors.json
 ignored_accounts.json
 accounts.txt
+accounts_pool.txt
+config.json
+blocked_pairs.json
 done.txt

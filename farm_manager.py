@@ -20,6 +20,17 @@ try:
 except ImportError:
     BeautifulSoup = None
 
+try:
+    import tkinter as tk
+    import tkinter.font as tkfont
+    from tkinter import messagebox
+except ImportError:
+    tk = None
+    tkfont = None
+    messagebox = None
+
+farm_manager = sys.modules[__name__]
+
 CONFIG_FILE = "config.json"
 ACCOUNTS_FILE = "accounts.txt"
 POOL_ACCOUNTS_FILE = "accounts_pool.txt"
@@ -72,8 +83,16 @@ def kill_pid(pid):
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
-        print(f"[-] Файл {CONFIG_FILE} не найден!")
-        sys.exit(1)
+        if os.path.exists("config.example.json"):
+            try:
+                import shutil
+                shutil.copy("config.example.json", CONFIG_FILE)
+                print(f"[+] Создан {CONFIG_FILE} из config.example.json")
+            except Exception:
+                pass
+        if not os.path.exists(CONFIG_FILE):
+            print(f"[-] Файл {CONFIG_FILE} не найден!")
+            sys.exit(1)
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -3448,20 +3467,7 @@ def funpay_worker():
         time.sleep(check_interval)
 
 
-# ==================== ЗАПУСК ПОТОКОВ ====================
-if __name__ == "__main__":
-    if any(arg in sys.argv for arg in ["--grab-cookies", "--cookies", "cookies", "-c"]):
-        auto_grab_everything()
-        sys.exit(0)
-
-    if sys.platform == "win32":
-        try:
-            # Отключаем модальные окна системных ошибок Windows (SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX)
-            ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
-            disable_quickedit()
-        except Exception:
-            pass
-
+def main_cli():
     print("==================================================")
     print("       MM2 FARM & FUNPAY SELLER (POOL MODE)       ")
     print("==================================================")
@@ -3484,3 +3490,961 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n[!] Остановка...")
         sys.exit(0)
+
+
+# ==================== MM2 FARM MANAGER GUI (STEAMPUNK RICE) ====================
+COLOR_BG = "#080f0a"             # Глубокий обсидиан
+COLOR_SURFACE = "#142218"        # Панель механизма
+COLOR_CARD = "#101b13"           # Карточка бота
+COLOR_CARD_BORDER = "#2a4231"    # Граница карточки
+COLOR_EMERALD = "#78c45d"        # Изумрудный акцент
+COLOR_GOLD = "#dec07e"           # Античное золото / латунь
+COLOR_BRIGHT_GOLD = "#fed594"    # Яркое золото
+COLOR_DARK_GOLD = "#8e6c32"      # Тёмная медь / латунь
+COLOR_TEXT_MAIN = "#dce7cf"      # Основной текст
+COLOR_TEXT_MUTED = "#98bb6c"     # Приглушённый текст
+COLOR_ERROR_BG = "#2b1414"       # Фон ошибки
+COLOR_ERROR_BORDER = "#e06c75"   # Рамка ошибки
+COLOR_ERROR_TEXT = "#ff7b72"     # Текст ошибки
+COLOR_PASS_BG = "#1c0d0d"        # Бейдж пароля
+COLOR_BTN_ON = "#2e6324"         # Кнопка Вкл
+COLOR_BTN_OFF = "#2b231b"        # Кнопка Выкл
+
+
+def copy_to_clipboard(root: tk.Tk, text: str):
+    """Копирует текст в буфер обмена кроссплатформенно (Windows + Linux)."""
+    try:
+        root.clipboard_clear()
+        root.clipboard_append(text)
+        root.update()
+    except Exception:
+        pass
+
+    # Для Linux Wayland (wl-copy)
+    if sys.platform != "win32":
+        try:
+            p = subprocess.Popen(["wl-copy"], stdin=subprocess.PIPE)
+            p.communicate(input=text.encode("utf-8"))
+        except Exception:
+            pass
+
+
+class SteampunkProgressBar(tk.Canvas):
+    """Кастомный плавный прогресс-бар в стиле Clockwork Sanctuary."""
+    def __init__(self, parent, height=8, fill_color=COLOR_EMERALD, bg=COLOR_CARD, **kwargs):
+        super().__init__(parent, height=height, bg=bg, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, **kwargs)
+        self.height = height
+        self.fill_color = fill_color
+        self.fraction = 0.0
+        self.bind("<Configure>", self._on_resize)
+
+    def _on_resize(self, event):
+        self._redraw(event.width)
+
+    def set_fraction(self, frac: float):
+        self.fraction = max(0.0, min(1.0, frac))
+        self._redraw(self.winfo_width())
+
+    def _redraw(self, w):
+        self.delete("all")
+        if w <= 1:
+            w = 500
+        fill_w = int(w * self.fraction)
+        if fill_w > 0:
+            self.create_rectangle(0, 0, fill_w, self.height, fill=self.fill_color, outline="")
+
+
+class FarmManagerGUI:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title("MM2 Farm Manager — Clockwork Sanctuary")
+        self.root.geometry("1100x780")
+        self.root.minsize(960, 680)
+        self.root.configure(bg=COLOR_BG)
+
+        # Выбираем лучший доступный моноширинный и экранный шрифт
+        self.font_family = "Nunito"
+        self.font_mono = "Courier New" if sys.platform == "win32" else "monospace"
+        available_families = [name.lower() for name in root.tk.call("font", "families")]
+        for f in ["CaskaydiaCove Nerd Font", "JetBrainsMono Nerd Font", "FiraCode Nerd Font", "Consolas"]:
+            if f.lower() in available_families:
+                self.font_mono = f
+                break
+
+        # Кэшируем объекты шрифтов для предотвращения утечки дескрипторов GDI на Windows
+        self.font_title = tkfont.Font(family=self.font_family, size=15, weight="bold")
+        self.font_header = tkfont.Font(family=self.font_family, size=11, weight="bold")
+        self.font_sub = tkfont.Font(family=self.font_family, size=9, weight="bold")
+        self.font_metric_val = tkfont.Font(family=self.font_family, size=14, weight="bold")
+        self.font_small = tkfont.Font(family=self.font_family, size=8)
+        self.font_small_bold = tkfont.Font(family=self.font_family, size=8, weight="bold")
+        self.font_mono_pass = tkfont.Font(family=self.font_mono, size=10, weight="bold")
+        self.font_mono_log = tkfont.Font(family=self.font_mono, size=9)
+
+        # Флаги работы фермы
+        self.is_running = True
+        self.farm_thread = None
+        self.block_thread = None
+        self.pool_block_thread = None
+        self.crash_thread = None
+        self.funpay_thread = None
+
+        # Кэш виджетов для in-place обновлений (никаких пересозданий каждую секунду!)
+        self.bot_card_widgets = {}     # username -> dict of widgets
+        self.error_card_widgets = {}   # username -> dict of widgets
+        self.empty_bots_label = None
+
+        # Запуск рабочих потоков фермы
+        self.start_farm_threads()
+
+        # Построение интерфейса
+        self.build_ui()
+
+        # Настройка перенаправления stdout в лог-окно
+        self.setup_log_redirection()
+
+        # Таймер обновления данных каждую секунду (1000 мс)
+        self.root.after(1000, self.refresh_ui)
+
+    def start_farm_threads(self):
+        farm_manager.set_farm_enabled(True)
+        if not self.farm_thread or not self.farm_thread.is_alive():
+            self.farm_thread = threading.Thread(target=farm_manager.farm_worker, daemon=True)
+            self.farm_thread.start()
+
+        if not self.block_thread or not self.block_thread.is_alive():
+            self.block_thread = threading.Thread(target=farm_manager.block_queue_worker, daemon=True)
+            self.block_thread.start()
+
+        if not self.pool_block_thread or not self.pool_block_thread.is_alive():
+            self.pool_block_thread = threading.Thread(target=farm_manager.auto_pool_blocker_worker, daemon=True)
+            self.pool_block_thread.start()
+
+        if not self.crash_thread or not self.crash_thread.is_alive():
+            self.crash_thread = threading.Thread(target=farm_manager.crash_dialog_watcher_worker, daemon=True)
+            self.crash_thread.start()
+
+        if not self.funpay_thread or not self.funpay_thread.is_alive():
+            self.funpay_thread = threading.Thread(target=farm_manager.funpay_worker, daemon=True)
+            self.funpay_thread.start()
+
+    def build_ui(self):
+        # 1. ШАПКА / УПРАВЛЕНИЕ
+        self.create_header()
+
+        # 2. ПАНЕЛЬ МЕТРИК (Steampunk Gauges)
+        self.create_metrics_bar()
+
+        # 3. КРИТИЧЕСКИЙ БЛОК: ОШИБКИ ПОДКЛЮЧЕНИЯ И ПАРОЛИ
+        self.error_frame = tk.Frame(self.root, bg=COLOR_ERROR_BG, highlightthickness=2, highlightbackground=COLOR_ERROR_BORDER, padx=12, pady=10)
+        self.error_header_label = tk.Label(self.error_frame, text="", bg=COLOR_ERROR_BG, fg=COLOR_ERROR_TEXT, font=self.font_header)
+        self.error_header_label.pack(anchor="w", pady=(0, 6))
+        self.error_cards_container = tk.Frame(self.error_frame, bg=COLOR_ERROR_BG)
+        self.error_cards_container.pack(fill=tk.X)
+
+        # 4. РАЗДЕЛ АКТИВНЫХ БОТОВ MM2
+        self.bots_header = tk.Frame(self.root, bg=COLOR_BG)
+        self.bots_header.pack(fill=tk.X, padx=16, pady=(10, 4))
+        tk.Label(self.bots_header, text="⚙️ АКТИВНЫЕ БОТЫ MM2 В РАБОТЕ", bg=COLOR_BG, fg=COLOR_TEXT_MUTED, font=self.font_sub).pack(side=tk.LEFT)
+
+        # Скроллируемая область ботов
+        self.bots_container = tk.Frame(self.root, bg=COLOR_BG)
+        self.bots_container.pack(fill=tk.BOTH, expand=True, padx=14, pady=4)
+
+        self.canvas = tk.Canvas(self.bots_container, bg=COLOR_BG, highlightthickness=0)
+        self.scrollbar = tk.Scrollbar(self.bots_container, orient="vertical", command=self.canvas.yview)
+        self.scrollable_bots_frame = tk.Frame(self.canvas, bg=COLOR_BG)
+
+        self.scrollable_bots_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_bots_frame, anchor="nw")
+        self.canvas.configure(xscrollcommand=None, yscrollcommand=self.scrollbar.set)
+
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfig(self.canvas_window, width=event.width))
+        self.canvas.bind_all("<MouseWheel>", lambda event: self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
+
+        # 5. КОНСОЛЬНЫЙ ЛОГ (Сворачиваемый)
+        self.create_console_drawer()
+
+        # 6. СТАТУС БАР
+        self.create_footer()
+
+    def create_header(self):
+        hdr = tk.Frame(self.root, bg=COLOR_SURFACE, highlightthickness=2, highlightbackground=COLOR_GOLD, padx=16, pady=10)
+        hdr.pack(fill=tk.X, padx=14, pady=(10, 6))
+
+        # Левая часть
+        left = tk.Frame(hdr, bg=COLOR_SURFACE)
+        left.pack(side=tk.LEFT)
+        tk.Label(left, text="⚙️ MM2 FARM MANAGER", bg=COLOR_SURFACE, fg=COLOR_BRIGHT_GOLD, font=self.font_title).pack(anchor="w")
+        tk.Label(left, text="CLOCKWORK SANCTUARY • EMERALD V5.0", bg=COLOR_SURFACE, fg=COLOR_EMERALD, font=self.font_sub).pack(anchor="w")
+
+        # Правая часть (кнопки)
+        right = tk.Frame(hdr, bg=COLOR_SURFACE)
+        right.pack(side=tk.RIGHT)
+
+        btn_add = tk.Button(right, text="➕ Добавить Аккаунт", bg="#1c2d22", fg=COLOR_TEXT_MAIN, activebackground="#2a4534", activeforeground="#ffffff", font=self.font_sub, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_EMERALD, padx=10, pady=4, cursor="hand2", command=self.on_add_account)
+        btn_add.pack(side=tk.LEFT, padx=6)
+
+        btn_cookies = tk.Button(right, text="⚡ АВТО-КУКИ ВСЕГО", bg="#2b1f08", fg=COLOR_BRIGHT_GOLD, activebackground="#3d3226", activeforeground="#ffffff", font=self.font_sub, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_GOLD, padx=10, pady=4, cursor="hand2", command=self.on_open_cookie_grabber)
+        btn_cookies.pack(side=tk.LEFT, padx=6)
+
+        btn_done = tk.Button(right, text="★ Готовые", bg="#2b231b", fg=COLOR_BRIGHT_GOLD, activebackground="#3d3226", activeforeground="#ffffff", font=self.font_sub, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_GOLD, padx=10, pady=4, cursor="hand2", command=self.on_view_done)
+        btn_done.pack(side=tk.LEFT, padx=6)
+
+        self.btn_goal_mode = tk.Button(right, text="🎯 Цель: ОБА", bg="#182b22", fg=COLOR_EMERALD, activebackground="#2a4534", activeforeground="#ffffff", font=self.font_sub, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_EMERALD, padx=10, pady=4, cursor="hand2", command=self.on_change_goal_mode)
+        self.btn_goal_mode.pack(side=tk.LEFT, padx=6)
+
+        btn_ref = tk.Button(right, text="🔄", bg="#1c2d22", fg=COLOR_TEXT_MAIN, font=self.font_sub, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, padx=8, pady=4, cursor="hand2", command=self.refresh_ui)
+        btn_ref.pack(side=tk.LEFT, padx=6)
+
+        # Главная кнопка Включения/Паузы
+        self.master_btn = tk.Button(right, text="⚡ ФЕРМА ВКЛЮЧЕНА", bg=COLOR_BTN_ON, fg="#ffffff", activebackground="#3a782e", activeforeground="#ffffff", font=self.font_header, relief="flat", bd=2, highlightthickness=2, highlightbackground=COLOR_EMERALD, padx=14, pady=4, cursor="hand2", command=self.on_master_toggle)
+        self.master_btn.pack(side=tk.LEFT, padx=8)
+
+    def create_metrics_bar(self):
+        m_frame = tk.Frame(self.root, bg=COLOR_BG)
+        m_frame.pack(fill=tk.X, padx=14, pady=4)
+
+        self.cards_data = [
+            ("Статус системы", "АКТИВНА", "● Процессы запущены"),
+            ("Боты в MM2", "0 / 50", "Очередь пула: 0"),
+            ("Готово к продаже", "0 шт.", "Режим: ОБА"),
+            ("Всего монет MM2", "🪙 0", "Суммарный баланс"),
+            ("ОЗУ / Память", "0%", "0 / 0 GB"),
+        ]
+
+        self.metric_widgets = []
+        for i, (title, val, sub) in enumerate(self.cards_data):
+            c = tk.Frame(m_frame, bg=COLOR_SURFACE, highlightthickness=1.5, highlightbackground=COLOR_GOLD, padx=12, pady=8)
+            c.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
+
+            lbl_t = tk.Label(c, text=title, bg=COLOR_SURFACE, fg=COLOR_TEXT_MUTED, font=self.font_small_bold)
+            lbl_t.pack(anchor="w")
+
+            lbl_v = tk.Label(c, text=val, bg=COLOR_SURFACE, fg=COLOR_BRIGHT_GOLD, font=self.font_metric_val)
+            lbl_v.pack(anchor="w")
+
+            lbl_s = tk.Label(c, text=sub, bg=COLOR_SURFACE, fg=COLOR_EMERALD, font=self.font_small)
+            lbl_s.pack(anchor="w")
+
+            self.metric_widgets.append((lbl_v, lbl_s))
+
+    def create_console_drawer(self):
+        c_frame = tk.Frame(self.root, bg=COLOR_BG)
+        c_frame.pack(fill=tk.X, padx=14, pady=(2, 4))
+
+        self.show_console = tk.BooleanVar(value=False)
+        self.console_btn = tk.Button(c_frame, text="▶ 📜 Журнал работы фермы (Live Console)", bg="#121e16", fg=COLOR_TEXT_MUTED, activebackground="#1a2d21", activeforeground=COLOR_TEXT_MAIN, font=self.font_small_bold, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, anchor="w", padx=8, pady=3, cursor="hand2", command=self.toggle_console)
+        self.console_btn.pack(fill=tk.X)
+
+        self.console_box = tk.Frame(c_frame, bg=COLOR_BG)
+
+        self.log_text = tk.Text(self.console_box, bg="#080f0a", fg="#98bb6c", font=self.font_mono_log, height=7, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, wrap="char")
+        self.log_scroll = tk.Scrollbar(self.console_box, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=self.log_scroll.set)
+
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.insert(tk.END, "⚙️ Ферма готова к работе. Логи выводятся здесь в реальном времени.\n")
+
+    def toggle_console(self):
+        if self.show_console.get():
+            self.console_box.pack_forget()
+            self.console_btn.configure(text="▶ 📜 Журнал работы фермы (Live Console)")
+            self.show_console.set(False)
+        else:
+            self.console_box.pack(fill=tk.X, pady=4)
+            self.console_btn.configure(text="▼ 📜 Журнал работы фермы (Live Console)")
+            self.show_console.set(True)
+
+    def create_footer(self):
+        ftr = tk.Frame(self.root, bg=COLOR_BG)
+        ftr.pack(fill=tk.X, padx=16, pady=(2, 6))
+
+        self.status_lbl = tk.Label(ftr, text="🌿 ym1co MM2 Farm Manager: Все системы функционируют штатно", bg=COLOR_BG, fg=COLOR_EMERALD, font=self.font_small)
+        self.status_lbl.pack(side=tk.LEFT)
+
+        folder_name = os.path.basename(os.getcwd())
+        tk.Label(ftr, text=f"📁 Папка: {folder_name}", bg=COLOR_BG, fg=COLOR_TEXT_MUTED, font=self.font_small).pack(side=tk.RIGHT)
+
+    def on_master_toggle(self):
+        self.is_running = not self.is_running
+        farm_manager.set_farm_enabled(self.is_running)
+
+        if self.is_running:
+            self.master_btn.configure(text="⚡ ФЕРМА ВКЛЮЧЕНА", bg=COLOR_BTN_ON, fg="#ffffff")
+            self.metric_widgets[0][0].configure(text="АКТИВНА")
+            self.metric_widgets[0][1].configure(text="● Процессы запущены")
+            self.status_lbl.configure(text="⚡ Ферма запущена: аккаунты запускаются и контролируются в реальном времени.")
+        else:
+            self.master_btn.configure(text="⏸ ФЕРМА НА ПАУЗЕ", bg=COLOR_BTN_OFF, fg=COLOR_GOLD)
+            self.metric_widgets[0][0].configure(text="ПАУЗА")
+            self.metric_widgets[0][1].configure(text="○ Запуск новых окон приостановлен")
+            self.status_lbl.configure(text="⏸ Ферма на паузе: новые окна не стартуют.")
+
+        self.refresh_ui()
+
+    def setup_log_redirection(self):
+        gui = self
+        class Redirector:
+            def __init__(self, orig):
+                self.orig = orig
+            def write(self, s):
+                if self.orig:
+                    self.orig.write(s)
+                clean = s.strip()
+                if clean:
+                    try:
+                        gui.root.after(0, gui.append_log, clean)
+                    except Exception:
+                        pass
+            def flush(self):
+                if self.orig:
+                    self.orig.flush()
+
+        sys.stdout = Redirector(sys.stdout)
+
+    def append_log(self, text: str):
+        try:
+            ts = time.strftime("%H:%M:%S")
+            self.log_text.insert(tk.END, f"[{ts}] {text}\n")
+            self.log_text.see(tk.END)
+        except Exception:
+            pass
+
+    def refresh_ui(self):
+        try:
+            snap = farm_manager.get_farm_snapshot()
+
+            # Обновление метрик
+            self.metric_widgets[1][0].configure(text=f"{snap['active_bots_count']} / {snap['max_bots']}")
+            self.metric_widgets[1][1].configure(text=f"Очередь пула: {snap['pool_count']}")
+            self.metric_widgets[2][0].configure(text=f"{snap['done_count']} шт.")
+
+            g_mode = snap.get("goal_mode", "both").lower()
+            if g_mode in ("level", "lvl", "уровень", "лвл"):
+                mode_btn_txt = "🎯 Цель: Только Lvl"
+                mode_sub = "Режим: Только Lvl"
+                mode_bg = "#182b3d"
+                mode_fg = "#77bbff"
+            elif g_mode in ("coins", "price", "money", "монеты", "цена"):
+                mode_btn_txt = "🎯 Цель: Только Цена"
+                mode_sub = "Режим: Только Цена"
+                mode_bg = "#2b2b18"
+                mode_fg = COLOR_BRIGHT_GOLD
+            else:
+                mode_btn_txt = "🎯 Цель: ОБА"
+                mode_sub = "Режим: Lvl + Цена"
+                mode_bg = "#182b22"
+                mode_fg = COLOR_EMERALD
+
+            self.metric_widgets[2][1].configure(text=mode_sub)
+            if hasattr(self, "btn_goal_mode"):
+                self.btn_goal_mode.configure(text=mode_btn_txt, bg=mode_bg, fg=mode_fg)
+
+            self.metric_widgets[3][0].configure(text=f"🪙 {snap['total_coins']:,}")
+            self.metric_widgets[4][0].configure(text=f"{snap['ram_percent']}%")
+            self.metric_widgets[4][1].configure(text=f"{snap['ram_used_gb']} / {snap['ram_total_gb']} GB")
+
+            # Рендер ошибок с паролями (in-place)
+            self.render_errors(snap.get("errors", []))
+
+            # Рендер карточек активных ботов (in-place)
+            self.render_bots(snap.get("bots", []), target_lvl=snap.get("target_level", 100), target_coins=snap.get("target_coins", 40000), goal_mode=g_mode)
+
+        except Exception as e:
+            print(f"[GUI REFRESH ERROR]: {e}")
+        finally:
+            self.root.after(1000, self.refresh_ui)
+
+    def dismiss_error(self, uname: str):
+        """Полностью и навсегда удаляет проблемный аккаунт из пула фермы по клику на крестик."""
+        farm_manager.delete_account_completely(uname)
+        if uname in self.error_card_widgets:
+            self.error_card_widgets[uname]["frame"].destroy()
+            del self.error_card_widgets[uname]
+        if not self.error_card_widgets:
+            self.error_frame.pack_forget()
+        else:
+            self.error_header_label.config(text=f"⚠️ ОШИБКА ПОДКЛЮЧЕНИЯ / ТРЕБУЕТСЯ ВНИМАНИЕ ({len(self.error_card_widgets)} АКК.)")
+        self.status_lbl.configure(text=f"✓ Аккаунт {uname} навсегда удален из пула фермы и исключен из RAM")
+
+    def render_errors(self, errors):
+        """Плавный рендер ошибок без удаления и пересоздания всех виджетов."""
+        if not errors:
+            if self.error_frame.winfo_ismapped():
+                self.error_frame.pack_forget()
+            for w in self.error_card_widgets.values():
+                w["frame"].destroy()
+            self.error_card_widgets.clear()
+            return
+
+        if not self.error_frame.winfo_ismapped():
+            self.error_frame.pack(fill=tk.X, padx=14, pady=4, before=self.bots_header)
+
+        self.error_header_label.config(text=f"⚠️ ОШИБКА ПОДКЛЮЧЕНИЯ / ТРЕБУЕТСЯ ВНИМАНИЕ ({len(errors)} АКК.)")
+
+        current_unames = set()
+        for err in errors:
+            uname = err.get("username", "Unknown")
+            pwd = err.get("password", "—")
+            msg = err.get("error", "Кик / Ошибка связи с сервером")
+            ts = err.get("timestamp", "")
+            current_unames.add(uname)
+
+            if uname in self.error_card_widgets:
+                # Обновляем существующую карточку
+                self.error_card_widgets[uname]["lbl_msg"].config(text=f"🔴 Причина: {msg}  [{ts}]")
+            else:
+                # Создаем карточку ошибки один раз
+                card = tk.Frame(self.error_cards_container, bg="#180d0d", highlightthickness=1, highlightbackground=COLOR_GOLD, padx=10, pady=6)
+                card.pack(fill=tk.X, pady=3)
+
+                r1 = tk.Frame(card, bg="#180d0d")
+                r1.pack(fill=tk.X)
+
+                tk.Label(r1, text=f"👤 Аккаунт: {uname}", bg="#180d0d", fg=COLOR_TEXT_MAIN, font=self.font_header).pack(side=tk.LEFT, padx=(0, 10))
+
+                tk.Label(r1, text="🔑 Пароль:", bg="#180d0d", fg=COLOR_GOLD, font=self.font_sub).pack(side=tk.LEFT)
+                tk.Label(r1, text=f" {pwd} ", bg=COLOR_PASS_BG, fg=COLOR_BRIGHT_GOLD, font=self.font_mono_pass, relief="solid", bd=1).pack(side=tk.LEFT, padx=6)
+
+                btn_dismiss = tk.Button(r1, text="✕", bg="#2a1818", fg=COLOR_TEXT_MAIN, relief="flat", bd=1, font=self.font_small_bold, cursor="hand2", command=lambda u=uname: self.dismiss_error(u))
+                btn_dismiss.pack(side=tk.RIGHT, padx=4)
+
+                btn_copy_both = tk.Button(r1, text="📋 Логин:Пароль", bg="#2a1818", fg=COLOR_TEXT_MAIN, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, font=self.font_small_bold, cursor="hand2", command=lambda u=uname, p=pwd: (copy_to_clipboard(self.root, f"{u}:{p}"), self.status_lbl.configure(text=f"✓ Скопировано: {u}:{p}")))
+                btn_copy_both.pack(side=tk.RIGHT, padx=4)
+
+                btn_copy_p = tk.Button(r1, text="📋 Скопировать Пароль", bg="#3d2c18", fg=COLOR_BRIGHT_GOLD, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_GOLD, font=self.font_small_bold, cursor="hand2", command=lambda p=pwd: (copy_to_clipboard(self.root, p), self.status_lbl.configure(text="✓ Пароль скопирован в буфер обмена!")))
+                btn_copy_p.pack(side=tk.RIGHT, padx=4)
+
+                r2 = tk.Frame(card, bg="#180d0d")
+                r2.pack(fill=tk.X, pady=(4, 0))
+                lbl_msg = tk.Label(r2, text=f"🔴 Причина: {msg}  [{ts}]", bg="#180d0d", fg=COLOR_TEXT_MUTED, font=self.font_small)
+                lbl_msg.pack(side=tk.LEFT)
+
+                self.error_card_widgets[uname] = {
+                    "frame": card,
+                    "lbl_msg": lbl_msg,
+                }
+
+        # Удаляем устраненные ошибки
+        for uname in list(self.error_card_widgets.keys()):
+            if uname not in current_unames:
+                self.error_card_widgets[uname]["frame"].destroy()
+                del self.error_card_widgets[uname]
+
+    def render_bots(self, bots, target_lvl=100, target_coins=40000, goal_mode="both"):
+        """Плавный in-place рендер ботов (без пересоздания виджетов и потери скролла)."""
+        if not bots:
+            if not self.empty_bots_label:
+                self.empty_bots_label = tk.Label(self.scrollable_bots_frame, text="🌿 В данный момент нет активных ботов в игре.", bg=COLOR_BG, fg=COLOR_TEXT_MUTED, font=self.font_header, pady=30)
+                self.empty_bots_label.pack(fill=tk.BOTH, expand=True)
+            for b in self.bot_card_widgets.values():
+                b["frame"].destroy()
+            self.bot_card_widgets.clear()
+            return
+        else:
+            if self.empty_bots_label:
+                self.empty_bots_label.destroy()
+                self.empty_bots_label = None
+
+        current_bots = set()
+        for bot in bots:
+            uname = bot.get("username", "Unknown")
+            pwd = bot.get("password", "")
+            pid_val = bot.get("pid") or "—"
+            up_s = bot.get("uptime_sec", 0)
+            up_str = f"{up_s // 60}м {up_s % 60}с" if up_s > 0 else "0с"
+            lvl = bot.get("level", 0)
+            coins = bot.get("coins", 0)
+            lvl_frac = min(1.0, max(0.0, lvl / float(target_lvl))) if target_lvl > 0 else 1.0
+            coin_frac = min(1.0, max(0.0, coins / float(target_coins))) if target_coins > 0 else 1.0
+            g_mode = (goal_mode or "both").lower()
+            if g_mode in ("level", "lvl", "уровень", "лвл"):
+                total_frac = lvl_frac
+            elif g_mode in ("coins", "price", "money", "монеты", "цена"):
+                total_frac = coin_frac
+            else:
+                total_frac = min(lvl_frac, coin_frac) if target_coins > 0 else lvl_frac
+            st = (bot.get("status") or "FARMING").upper()
+            st_color = COLOR_ERROR_TEXT if ("KICK" in st or "ERROR" in st) else (COLOR_GOLD if ("WAIT" in st or "LOBBY" in st) else COLOR_EMERALD)
+
+            current_bots.add(uname)
+
+            if uname in self.bot_card_widgets:
+                w = self.bot_card_widgets[uname]
+                w["lbl_status"].config(text=f"  ● {st}  ", fg=st_color)
+                w["lbl_pid_up"].config(text=f"PID: {pid_val}  •  Аптайм: {up_str}")
+                w["lbl_lvl"].config(text=f"⭐ Прогресс Уровня MM2: {lvl} / {target_lvl}")
+                w["lbl_pct"].config(text=f"{int(total_frac * 100)}%")
+                w["bar"].set_fraction(total_frac)
+                w["lbl_coins"].config(text=f"🪙 Баланс монет MM2: {coins:,} / {target_coins:,}")
+            else:
+                card = tk.Frame(self.scrollable_bots_frame, bg=COLOR_SURFACE, highlightthickness=1.5, highlightbackground=COLOR_CARD_BORDER, padx=14, pady=10)
+                card.pack(fill=tk.X, pady=4)
+
+                # 1. Заголовок карточки
+                r1 = tk.Frame(card, bg=COLOR_SURFACE)
+                r1.pack(fill=tk.X)
+
+                tk.Label(r1, text=f"🤖 {uname}", bg=COLOR_SURFACE, fg=COLOR_TEXT_MAIN, font=self.font_header).pack(side=tk.LEFT)
+                lbl_status = tk.Label(r1, text=f"  ● {st}  ", bg="#0d1810", fg=st_color, font=self.font_small_bold, relief="solid", bd=1)
+                lbl_status.pack(side=tk.LEFT, padx=10)
+
+                btn_p = tk.Button(r1, text="📋 Pass", bg="#1c2d22", fg=COLOR_GOLD, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, font=self.font_small_bold, cursor="hand2", command=lambda p=pwd: (copy_to_clipboard(self.root, p), self.status_lbl.configure(text=f"✓ Пароль скопирован: {p}")))
+                btn_p.pack(side=tk.RIGHT, padx=4)
+
+                lbl_pid_up = tk.Label(r1, text=f"PID: {pid_val}  •  Аптайм: {up_str}", bg=COLOR_SURFACE, fg=COLOR_TEXT_MUTED, font=self.font_sub)
+                lbl_pid_up.pack(side=tk.RIGHT, padx=10)
+
+                # 2. Прогресс УРОВНЯ и МОНЕТ MM2
+                r2 = tk.Frame(card, bg=COLOR_SURFACE)
+                r2.pack(fill=tk.X, pady=(6, 2))
+                lbl_lvl = tk.Label(r2, text=f"⭐ Прогресс Уровня MM2: {lvl} / {target_lvl}", bg=COLOR_SURFACE, fg=COLOR_TEXT_MAIN, font=self.font_sub)
+                lbl_lvl.pack(side=tk.LEFT)
+                lbl_pct = tk.Label(r2, text=f"{int(total_frac * 100)}%", bg=COLOR_SURFACE, fg=COLOR_TEXT_MUTED, font=self.font_sub)
+                lbl_pct.pack(side=tk.RIGHT)
+
+                bar = SteampunkProgressBar(card, height=8, fill_color=COLOR_EMERALD, bg=COLOR_CARD)
+                bar.pack(fill=tk.X, pady=2)
+                bar.set_fraction(total_frac)
+
+                # 3. Баланс монет MM2 и быстрое копирование
+                r3 = tk.Frame(card, bg=COLOR_SURFACE)
+                r3.pack(fill=tk.X, pady=(6, 0))
+
+                lbl_coins = tk.Label(r3, text=f"🪙 Баланс монет MM2: {coins:,} / {target_coins:,}", bg=COLOR_SURFACE, fg=COLOR_BRIGHT_GOLD, font=self.font_header)
+                lbl_coins.pack(side=tk.LEFT)
+
+                btn_copy_both = tk.Button(r3, text="📋 Логин:Пароль", bg="#1c2d22", fg=COLOR_TEXT_MAIN, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, font=self.font_small_bold, cursor="hand2", command=lambda u=uname, p=pwd: (copy_to_clipboard(self.root, f"{u}:{p}"), self.status_lbl.configure(text=f"✓ Скопировано: {u}:{p}")))
+                btn_copy_both.pack(side=tk.RIGHT)
+
+                self.bot_card_widgets[uname] = {
+                    "frame": card,
+                    "lbl_status": lbl_status,
+                    "lbl_pid_up": lbl_pid_up,
+                    "lbl_lvl": lbl_lvl,
+                    "lbl_pct": lbl_pct,
+                    "bar": bar,
+                    "lbl_coins": lbl_coins,
+                }
+
+        # Удаляем карточки отключенных ботов
+        for uname in list(self.bot_card_widgets.keys()):
+            if uname not in current_bots:
+                self.bot_card_widgets[uname]["frame"].destroy()
+                del self.bot_card_widgets[uname]
+
+    def on_add_account(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Добавить аккаунт в пул")
+        dialog.geometry("520x260")
+        dialog.configure(bg=COLOR_SURFACE)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="➕ Добавление нового аккаунта в пул", bg=COLOR_SURFACE, fg=COLOR_BRIGHT_GOLD, font=self.font_header).pack(pady=(16, 8))
+        tk.Label(dialog, text="Формат: логин:пароль:куки_.ROBLOSECURITY\nили: логин:пароль", bg=COLOR_SURFACE, fg=COLOR_TEXT_MUTED, font=self.font_small).pack(pady=4)
+
+        entry = tk.Entry(dialog, bg="#080f0a", fg=COLOR_TEXT_MAIN, font=self.font_mono_log, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER)
+        entry.pack(fill=tk.X, padx=20, pady=12)
+        entry.focus_set()
+
+        btn_box = tk.Frame(dialog, bg=COLOR_SURFACE)
+        btn_box.pack(fill=tk.X, padx=20, pady=10)
+
+        def save():
+            val = entry.get().strip()
+            if val:
+                with open(farm_manager.POOL_ACCOUNTS_FILE, "a", encoding="utf-8") as f:
+                    f.write(val + "\n")
+                self.status_lbl.configure(text=f"✓ Аккаунт успешно добавлен в {farm_manager.POOL_ACCOUNTS_FILE}")
+                self.refresh_ui()
+                dialog.destroy()
+
+        tk.Button(btn_box, text="Отмена", bg="#1c2d22", fg=COLOR_TEXT_MAIN, font=self.font_sub, relief="flat", padx=10, pady=4, command=dialog.destroy).pack(side=tk.RIGHT, padx=6)
+        tk.Button(btn_box, text="Добавить в пул", bg="#3d2c18", fg=COLOR_BRIGHT_GOLD, font=self.font_sub, relief="flat", highlightthickness=1, highlightbackground=COLOR_GOLD, padx=12, pady=4, command=save).pack(side=tk.RIGHT, padx=6)
+
+    def on_change_goal_mode(self):
+        cur_cfg = farm_manager.load_json(farm_manager.CONFIG_FILE, farm_manager.CFG)
+        farm_cfg = cur_cfg.get("farm", {})
+        cur_mode = str(farm_cfg.get("goal_mode", "both")).lower()
+        cur_lvl = farm_cfg.get("target_level", 100)
+        cur_coins = farm_cfg.get("target_coins", 40000)
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("🎯 Настройка критериев готовности аккаунтов")
+        dialog.geometry("560x470")
+        dialog.configure(bg=COLOR_SURFACE)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="🎯 КРИТЕРИИ ГОТОВНОСТИ АККАУНТА", bg=COLOR_SURFACE, fg=COLOR_BRIGHT_GOLD, font=self.font_title).pack(pady=(14, 4))
+        tk.Label(dialog, text="Выберите, когда аккаунт считается готовым и отправляется на FunPay:", bg=COLOR_SURFACE, fg=COLOR_TEXT_MUTED, font=self.font_small).pack(pady=(0, 10))
+
+        initial_val = "both"
+        if cur_mode in ("level", "lvl", "уровень", "лвл"):
+            initial_val = "level"
+        elif cur_mode in ("coins", "price", "money", "монеты", "цена"):
+            initial_val = "coins"
+
+        mode_var = tk.StringVar(value=initial_val)
+
+        opt_frame = tk.Frame(dialog, bg=COLOR_SURFACE)
+        opt_frame.pack(fill=tk.X, padx=20, pady=4)
+
+        # Вариант 1: ОБА (Уровень + Монеты)
+        f_both = tk.Frame(opt_frame, bg="#0e1711", bd=1, relief="solid", highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, padx=12, pady=8)
+        f_both.pack(fill=tk.X, pady=4)
+        r_both = tk.Radiobutton(f_both, text="🌟 ОБА УСЛОВИЯ (Уровень + Цена/Монеты) [Рекомендуется]", variable=mode_var, value="both", bg="#0e1711", fg=COLOR_EMERALD, activebackground="#0e1711", activeforeground="#ffffff", selectcolor="#050a07", font=self.font_header)
+        r_both.pack(anchor="w")
+        tk.Label(f_both, text="Аккаунт выставляется на продажу ТОЛЬКО когда достигнуты И уровень, И целевые монеты.", bg="#0e1711", fg=COLOR_TEXT_MUTED, font=self.font_small).pack(anchor="w", padx=24)
+
+        # Вариант 2: Только по цене / монетам
+        f_coins = tk.Frame(opt_frame, bg="#17170e", bd=1, relief="solid", highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, padx=12, pady=8)
+        f_coins.pack(fill=tk.X, pady=4)
+        r_coins = tk.Radiobutton(f_coins, text="🪙 ТОЛЬКО ПО ЦЕНЕ / МОНЕТАМ", variable=mode_var, value="coins", bg="#17170e", fg=COLOR_BRIGHT_GOLD, activebackground="#17170e", activeforeground="#ffffff", selectcolor="#0a0a05", font=self.font_header)
+        r_coins.pack(anchor="w")
+        tk.Label(f_coins, text="Аккаунт выставляется на продажу сразу по достижении целевой суммы монет (уровень любой).", bg="#17170e", fg=COLOR_TEXT_MUTED, font=self.font_small).pack(anchor="w", padx=24)
+
+        # Вариант 3: Только по уровню (Lvl)
+        f_lvl = tk.Frame(opt_frame, bg="#0e141a", bd=1, relief="solid", highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, padx=12, pady=8)
+        f_lvl.pack(fill=tk.X, pady=4)
+        r_lvl = tk.Radiobutton(f_lvl, text="⭐ ТОЛЬКО ПО УРОВНЮ (LVL)", variable=mode_var, value="level", bg="#0e141a", fg="#77bbff", activebackground="#0e141a", activeforeground="#ffffff", selectcolor="#05080c", font=self.font_header)
+        r_lvl.pack(anchor="w")
+        tk.Label(f_lvl, text="Аккаунт выставляется на продажу сразу по достижении целевого уровня (монеты любые).", bg="#0e141a", fg=COLOR_TEXT_MUTED, font=self.font_small).pack(anchor="w", padx=24)
+
+        # Поля ввода целевых значений
+        val_frame = tk.Frame(dialog, bg=COLOR_SURFACE)
+        val_frame.pack(fill=tk.X, padx=20, pady=10)
+
+        tk.Label(val_frame, text="Целевой уровень (Lvl):", bg=COLOR_SURFACE, fg=COLOR_TEXT_MAIN, font=self.font_sub).grid(row=0, column=0, sticky="w", pady=4)
+        ent_lvl = tk.Entry(val_frame, bg="#080f0a", fg=COLOR_TEXT_MAIN, font=self.font_sub, insertbackground="#ffffff", width=14)
+        ent_lvl.grid(row=0, column=1, sticky="w", padx=10, pady=4)
+        ent_lvl.insert(0, str(cur_lvl))
+
+        tk.Label(val_frame, text="Целевая цена/монеты (Coins):", bg=COLOR_SURFACE, fg=COLOR_TEXT_MAIN, font=self.font_sub).grid(row=1, column=0, sticky="w", pady=4)
+        ent_coins = tk.Entry(val_frame, bg="#080f0a", fg=COLOR_BRIGHT_GOLD, font=self.font_sub, insertbackground="#ffffff", width=14)
+        ent_coins.grid(row=1, column=1, sticky="w", padx=10, pady=4)
+        ent_coins.insert(0, str(cur_coins))
+
+        def save_mode():
+            try:
+                new_lvl = int(ent_lvl.get().strip() or 100)
+                new_coins = int(ent_coins.get().strip().replace(",", "").replace(" ", "") or 40000)
+            except ValueError:
+                from tkinter import messagebox
+                messagebox.showerror("Ошибка", "Введите корректные целые числа для уровня и монет.")
+                return
+
+            chosen_mode = mode_var.get()
+            cur_cfg = farm_manager.load_json(farm_manager.CONFIG_FILE, farm_manager.CFG)
+            if "farm" not in cur_cfg:
+                cur_cfg["farm"] = {}
+            cur_cfg["farm"]["goal_mode"] = chosen_mode
+            cur_cfg["farm"]["target_level"] = new_lvl
+            cur_cfg["farm"]["target_coins"] = new_coins
+
+            farm_manager.save_json(farm_manager.CONFIG_FILE, cur_cfg)
+            if "farm" in farm_manager.CFG:
+                farm_manager.CFG["farm"]["goal_mode"] = chosen_mode
+                farm_manager.CFG["farm"]["target_level"] = new_lvl
+                farm_manager.CFG["farm"]["target_coins"] = new_coins
+
+            mode_titles = {
+                "both": "Оба условия (Lvl + Монеты)",
+                "coins": "Только по цене (Монеты)",
+                "level": "Только по уровню (Lvl)"
+            }
+            self.status_lbl.configure(text=f"✓ Режим готовности сохранен: {mode_titles.get(chosen_mode, chosen_mode)} (Lvl: {new_lvl}, Coins: {new_coins:,})")
+            self.refresh_ui()
+            dialog.destroy()
+
+        b_bar = tk.Frame(dialog, bg=COLOR_SURFACE)
+        b_bar.pack(fill=tk.X, padx=20, pady=10)
+        tk.Button(b_bar, text="Отмена", bg="#1c2d22", fg=COLOR_TEXT_MAIN, font=self.font_sub, relief="flat", padx=12, pady=4, command=dialog.destroy).pack(side=tk.RIGHT, padx=6)
+        tk.Button(b_bar, text="💾 Сохранить настройки", bg="#3d2c18", fg=COLOR_BRIGHT_GOLD, activebackground="#553a1a", activeforeground="#ffffff", font=self.font_sub, relief="flat", highlightthickness=1, highlightbackground=COLOR_GOLD, padx=14, pady=4, command=save_mode).pack(side=tk.RIGHT, padx=6)
+
+    def on_view_done(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Готовые аккаунты к продаже (100 Lvl)")
+        dialog.geometry("620x400")
+        dialog.configure(bg=COLOR_SURFACE)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="★ Аккаунты в done.txt (Формат FunPay)", bg=COLOR_SURFACE, fg=COLOR_BRIGHT_GOLD, font=self.font_title).pack(pady=10)
+
+        content = ""
+        if os.path.exists(farm_manager.DONE_FILE):
+            try:
+                with open(farm_manager.DONE_FILE, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+            except Exception:
+                pass
+
+        txt = tk.Text(dialog, bg="#080f0a", fg=COLOR_TEXT_MUTED, font=self.font_mono_log, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER)
+        txt.pack(fill=tk.BOTH, expand=True, padx=16, pady=6)
+        txt.insert(tk.END, content if content else "Пока нет готовых аккаунтов (все аккаунты ещё фармят).")
+        txt.configure(state="disabled")
+
+        b_box = tk.Frame(dialog, bg=COLOR_SURFACE)
+        b_box.pack(fill=tk.X, padx=16, pady=10)
+
+        def do_purge_all_done():
+            from tkinter import messagebox
+            if not messagebox.askyesno(
+                "Подтверждение зачистки",
+                "Вы уверены, что хотите ПОЛНОСТЬЮ удалить все эти готовые аккаунты отовсюду с ПК?\n\n"
+                "Они будут навсегда удалены из:\n"
+                "• accounts.txt и accounts_pool.txt\n"
+                "• txt.txt (BloxGen CSV)\n"
+                "• Roblox Account Manager (RAM)\n"
+                "• mm2_farm_stats.txt и bot_ids.json\n"
+                "• Файлов статистики воркспейсов Real/Xeno\n"
+                "• done.txt\n"
+                "И занесены в ignored_accounts.json, чтобы никогда больше не импортироваться."
+            ):
+                return
+            count = 0
+            for line in content.splitlines():
+                if not line.strip():
+                    continue
+                uname, uid = farm_manager.extract_user_info_from_line(line)
+                if uname:
+                    farm_manager.delete_account_completely(uname, user_id=uid, also_done=True)
+                    count += 1
+            self.status_lbl.configure(text=f"✓ Зачищено {count} готовых аккаунтов отовсюду с ПК!")
+            self.refresh_ui()
+            dialog.destroy()
+
+        def do_sync_and_verify_now():
+            btn_sync.configure(state="disabled", text="⏳ Проверка и заливка на FunPay...")
+            def worker():
+                success, msg = farm_manager.sync_and_verify_funpay_lot()
+                if success:
+                    self.status_lbl.configure(text=f"✓ FunPay: {msg[:100]}")
+                else:
+                    self.status_lbl.configure(text=f"⚠️ FunPay: {msg[:100]}")
+                self.refresh_ui()
+                dialog.destroy()
+            import threading
+            threading.Thread(target=worker, daemon=True).start()
+
+        if content:
+            tk.Button(b_box, text="📋 Скопировать всё", bg="#3d2c18", fg=COLOR_BRIGHT_GOLD, font=self.font_sub, relief="flat", highlightthickness=1, highlightbackground=COLOR_GOLD, padx=10, pady=4, command=lambda: (copy_to_clipboard(self.root, content), self.status_lbl.configure(text="✓ Все готовые аккаунты скопированы!"))).pack(side=tk.LEFT, padx=(0, 6))
+            btn_sync = tk.Button(b_box, text="⚡ Выгрузить на FunPay и проверить", bg="#2b1f08", fg=COLOR_BRIGHT_GOLD, font=self.font_sub, relief="flat", highlightthickness=1, highlightbackground=COLOR_GOLD, padx=10, pady=4, command=do_sync_and_verify_now)
+            btn_sync.pack(side=tk.LEFT, padx=6)
+            tk.Button(b_box, text="🗑️ Зачистить проданные отовсюду с ПК", bg="#3a1818", fg="#ff7777", activebackground="#552222", activeforeground="#ffffff", font=self.font_sub, relief="flat", highlightthickness=1, highlightbackground="#aa3333", padx=10, pady=4, command=do_purge_all_done).pack(side=tk.LEFT, padx=6)
+
+        tk.Button(b_box, text="Закрыть", bg="#1c2d22", fg=COLOR_TEXT_MAIN, font=self.font_sub, relief="flat", padx=10, pady=4, command=dialog.destroy).pack(side=tk.RIGHT)
+
+    def on_open_cookie_grabber(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("⚡ АВТО-КУКИ ВСЕГО (Real / BloxGen / Farm)")
+        dialog.geometry("760x640")
+        dialog.configure(bg=COLOR_SURFACE)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="⚡ АВТО-КУКИ ВСЕГО — Real / BloxGen", bg=COLOR_SURFACE, fg=COLOR_BRIGHT_GOLD, font=self.font_title).pack(pady=(12, 4))
+        tk.Label(dialog, text="Полный автомат: авто-сбор куки из Real, сопоставление с txt.txt и добавление в ферму:", bg=COLOR_SURFACE, fg=COLOR_TEXT_MUTED, font=self.font_small).pack(pady=2)
+
+        # Главная кнопка "АВТОКУКИ ВСЕГО"
+        def run_auto_everything():
+            btn_auto_all.configure(state="disabled", text="⏳ Идёт сканирование и авто-сбор куки...")
+            btn_start.configure(state="disabled")
+            btn_close.configure(state="disabled")
+
+            def worker():
+                try:
+                    def gui_log(msg):
+                        log_out.insert(tk.END, msg + "\n")
+                        log_out.see(tk.END)
+                    added = farm_manager.auto_grab_everything(log_fn=gui_log)
+                    lbl_log.configure(text=f"✓ Завершено! Добавлено в ферму: {added} аккаунтов с куки.")
+                    self.refresh_ui()
+                except Exception as ex:
+                    log_out.insert(tk.END, f"\n❌ Ошибка: {ex}\n")
+                finally:
+                    btn_auto_all.configure(state="normal", text="⚡ АВТО-КУКИ ВСЕГО (Сканировать Real + Файлы + Авто-добавление)")
+                    btn_start.configure(state="normal")
+                    btn_close.configure(state="normal")
+
+            import threading
+            threading.Thread(target=worker, daemon=True).start()
+
+        btn_auto_all = tk.Button(
+            dialog,
+            text="⚡ АВТО-КУКИ ВСЕГО (Сканировать Real + Файлы + Авто-добавление)",
+            bg="#2b1f08",
+            fg=COLOR_BRIGHT_GOLD,
+            activebackground="#3d3226",
+            activeforeground="#ffffff",
+            font=self.font_header,
+            relief="flat",
+            bd=2,
+            highlightthickness=2,
+            highlightbackground=COLOR_GOLD,
+            padx=16,
+            pady=8,
+            cursor="hand2",
+            command=run_auto_everything
+        )
+        btn_auto_all.pack(fill=tk.X, padx=16, pady=(6, 8))
+
+        scan_bar = tk.Frame(dialog, bg=COLOR_SURFACE)
+        scan_bar.pack(fill=tk.X, padx=16, pady=4)
+
+        def do_scan_real():
+            try:
+                found = farm_manager.scan_real_storage_for_all_accounts()
+                if found:
+                    txt_in.delete("1.0", tk.END)
+                    for acc in found:
+                        txt_in.insert(tk.END, f"{acc['username']}:{acc.get('password','')}\n")
+                    lbl_log.configure(text=f"✓ Найдено {len(found)} аккаунтов в хранилище Real!")
+                else:
+                    lbl_log.configure(text="ℹ️ В хранилище Real аккаунты не найдены. Вставьте логин:пароль вручную.")
+            except Exception as ex:
+                lbl_log.configure(text=f"Ошибка сканирования: {ex}")
+
+        def load_txt_file():
+            from tkinter import filedialog
+            f_path = filedialog.askopenfilename(filetypes=[("Text/CSV", "*.txt *.csv"), ("All files", "*.*")])
+            if f_path:
+                try:
+                    parsed = farm_manager.parse_raw_accounts_file(f_path)
+                    if parsed:
+                        txt_in.delete("1.0", tk.END)
+                        for acc in parsed:
+                            txt_in.insert(tk.END, f"{acc['username']}:{acc.get('password','')}\n")
+                        lbl_log.configure(text=f"✓ Загружено {len(parsed)} аккаунтов из файла!")
+                except Exception as ex:
+                    lbl_log.configure(text=f"Ошибка загрузки файла: {ex}")
+
+        tk.Button(scan_bar, text="🔍 Поиск в Real", bg="#1b2838", fg="#82aaff", font=self.font_small_bold, relief="flat", bd=1, highlightthickness=1, highlightbackground="#82aaff", padx=8, pady=3, cursor="hand2", command=do_scan_real).pack(side=tk.LEFT, padx=4)
+        tk.Button(scan_bar, text="📂 Загрузить файл", bg="#1c2d22", fg=COLOR_TEXT_MAIN, font=self.font_small_bold, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER, padx=8, pady=3, cursor="hand2", command=load_txt_file).pack(side=tk.LEFT, padx=4)
+
+        txt_in = tk.Text(dialog, bg="#080f0a", fg=COLOR_TEXT_MAIN, font=self.font_mono_log, height=6, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER)
+        txt_in.pack(fill=tk.X, padx=16, pady=4)
+        txt_in.insert(tk.END, "# Ручной ввод (логин:пароль или логин пароль):\n")
+
+        lbl_log = tk.Label(dialog, text="Готов к работе. Нажмите '⚡ АВТО-КУКИ ВСЕГО'.", bg=COLOR_SURFACE, fg=COLOR_EMERALD, font=self.font_small)
+        lbl_log.pack(anchor="w", padx=16, pady=2)
+
+        log_out = tk.Text(dialog, bg="#040805", fg="#98bb6c", font=self.font_mono_log, height=7, relief="flat", bd=1, highlightthickness=1, highlightbackground=COLOR_CARD_BORDER)
+        log_out.pack(fill=tk.BOTH, expand=True, padx=16, pady=4)
+
+        b_box = tk.Frame(dialog, bg=COLOR_SURFACE)
+        b_box.pack(fill=tk.X, padx=16, pady=(6, 12))
+
+        def start_worker():
+            raw_text = txt_in.get("1.0", tk.END)
+            accs = []
+            for l in raw_text.splitlines():
+                l = l.strip()
+                if not l or l.startswith("#"):
+                    continue
+                if ":" in l:
+                    pts = l.split(":", 1)
+                    accs.append({"username": pts[0].strip(), "password": pts[1].strip()})
+                else:
+                    pts = l.split()
+                    if len(pts) >= 2:
+                        accs.append({"username": pts[0].strip(), "password": pts[1].strip()})
+
+            if not accs:
+                lbl_log.configure(text="⚠️ Введите хотя бы один аккаунт (логин:пароль)!")
+                return
+
+            btn_start.configure(state="disabled", text="⏳ Идёт авторизация...")
+            btn_close.configure(state="disabled")
+
+            def worker_thread():
+                try:
+                    farm_manager.ensure_playwright_installed()
+                    total = len(accs)
+                    success = 0
+                    for i, a in enumerate(accs, 1):
+                        u = a["username"]
+                        p = a["password"]
+                        log_out.insert(tk.END, f"[{i}/{total}] Вход в {u}...\n")
+                        log_out.see(tk.END)
+                        ok, c, uid, msg = farm_manager.login_and_get_cookie(u, p, headless=True)
+                        if ok and c:
+                            uid_str = str(uid) if uid else "0"
+                            line = f"{u}:{p}:{c}:{uid_str}\n"
+                            with open(farm_manager.ACCOUNTS_FILE, "a", encoding="utf-8") as af:
+                                af.write(line)
+                            with open(farm_manager.POOL_ACCOUNTS_FILE, "a", encoding="utf-8") as pf:
+                                pf.write(line)
+                            success += 1
+                            log_out.insert(tk.END, f"  ✓ Куки получена! (ID: {uid_str})\n")
+                        else:
+                            log_out.insert(tk.END, f"  ❌ Не удалось ({msg})\n")
+                        log_out.see(tk.END)
+
+                    log_out.insert(tk.END, f"\n🎉 Завершено! Успешно: {success}/{total}. Добавлено в ферму.\n")
+                    log_out.see(tk.END)
+                    lbl_log.configure(text=f"✓ Готово! Успешно получено: {success}/{total} куки.")
+                    self.refresh_ui()
+                except Exception as ex:
+                    log_out.insert(tk.END, f"\n❌ Ошибка: {ex}\n")
+                finally:
+                    btn_start.configure(state="normal", text="🚀 Начать получение куки")
+                    btn_close.configure(state="normal")
+
+            import threading
+            threading.Thread(target=worker_thread, daemon=True).start()
+
+        btn_start = tk.Button(b_box, text="🚀 Начать получение куки", bg="#1c2d22", fg="#82aaff", font=self.font_header, relief="flat", bd=1, highlightthickness=1, highlightbackground="#82aaff", padx=14, pady=4, cursor="hand2", command=start_worker)
+        btn_start.pack(side=tk.LEFT)
+
+        btn_close = tk.Button(b_box, text="Закрыть", bg="#1c2d22", fg=COLOR_TEXT_MAIN, font=self.font_sub, relief="flat", padx=10, pady=4, command=dialog.destroy)
+        btn_close.pack(side=tk.RIGHT)
+
+
+
+
+def main_gui():
+    if not tk:
+        print("[!] Tkinter недоступен, запускаем в консольном режиме...")
+        main_cli()
+        return
+
+    try:
+        root = tk.Tk()
+        app = FarmManagerGUI(root)
+        root.mainloop()
+    except Exception as e:
+        print(f"[!] Ошибка запуска GUI ({e}), переключение в консольный режим...")
+        main_cli()
+
+
+# ==================== ТОЧКА ВХОДА ====================
+if __name__ == "__main__":
+    farm_manager = sys.modules[__name__]
+
+    if sys.platform == "win32":
+        try:
+            # Отключаем модальные окна системных ошибок Windows (SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX)
+            ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
+            disable_quickedit()
+        except Exception:
+            pass
+
+    if any(arg in sys.argv for arg in ["--grab-cookies", "--cookies", "cookies", "-c"]):
+        auto_grab_everything()
+        sys.exit(0)
+
+    if any(arg in sys.argv for arg in ["--cli", "--no-gui", "--console", "-cli", "-headless"]):
+        main_cli()
+    else:
+        main_gui()
